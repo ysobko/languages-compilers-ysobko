@@ -3,3 +3,6 @@ tests/*.ll
 tests/ok1
 tests/ok2
 tests/ok3
+.venv/
+__pycache__/
+*.pyc

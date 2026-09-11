@@ -1,238 +1,236 @@
 import sys
-import re
-
-from llvmlite import ir
-import llvmlite.binding as llvm
 
 
-I32 = ir.IntType(32)
-I8 = ir.IntType(8)
-
-IDENT_RE = r"[A-Za-z_][A-Za-z0-9_]*"
-RESERVED = {"int", "exit"}
+class CompileError(Exception):
+    pass
 
 
-def fail(line_no, message):
-    print(f"compilation error: line {line_no}: {message}", file=sys.stderr)
-    sys.exit(1)
+class Token:
+    def __init__(self, kind, text, line, column):
+        self.kind = kind
+        self.text = text
+        self.line = line
+        self.column = column
 
-
-def is_int(text):
-    return re.fullmatch(r"-?\d+", text) is not None
-
-
-def build_compiler(source_path, output_path):
-    with open(source_path, "r") as f:
-        lines = f.readlines()
-
-    module = ir.Module(name="practice1")
-    module.triple = llvm.get_default_triple()
-
-    main_fn = ir.Function(
-        module,
-        ir.FunctionType(I32, []),
-        name="main"
-    )
-
-    entry = main_fn.append_basic_block("entry")
-    builder = ir.IRBuilder(entry)
-
-    printf = ir.Function(
-        module,
-        ir.FunctionType(
-            I32,
-            [ir.PointerType(I8)],
-            var_arg=True
-        ),
-        name="printf"
-    )
-
-    text = b"Program exit with result %d\n\0"
-
-    fmt = ir.GlobalVariable(
-        module,
-        ir.ArrayType(I8, len(text)),
-        name="fmt"
-    )
-
-    fmt.linkage = "private"
-    fmt.global_constant = True
-
-    fmt.initializer = ir.Constant(
-        ir.ArrayType(I8, len(text)),
-        bytearray(text)
-    )
-
-    symbols = {}
-    exit_seen = False
-
-    def value_of(token, line_no):
-        if is_int(token):
-            return ir.Constant(I32, int(token))
-
-        if re.fullmatch(IDENT_RE, token):
-            if token not in symbols:
-                fail(line_no, f"variable '{token}' is not declared")
-            return builder.load(symbols[token], name=f"load_{token}")
-
-        fail(line_no, f"invalid operand '{token}'")
-
-    for line_no, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-
-        if not line:
-            continue
-
-        if exit_seen:
-            fail(line_no, "exit must be the last statement")
-
-        declaration = re.fullmatch(
-            rf"int\s+({IDENT_RE})",
-            line
+    def __repr__(self):
+        return (
+            f"Token({self.kind!r}, {self.text!r}, "
+            f"{self.line}:{self.column})"
         )
 
-        if declaration:
-            name = declaration.group(1)
 
-            if name in RESERVED:
-                fail(line_no, f"'{name}' is a reserved word")
+KEYWORDS = {
+    "i32": "keyword",
+    "mut": "keyword",
+    "exit": "keyword",
+}
 
-            if name in symbols:
-                fail(line_no, f"variable '{name}' already declared")
 
-            symbols[name] = builder.alloca(I32, name=name)
-            continue
+def is_alpha(b):
+    return (
+        ord("a") <= b <= ord("z")
+        or ord("A") <= b <= ord("Z")
+        or b == ord("_")
+    )
 
-        if line.startswith("int"):
-            fail(line_no, "invalid declaration")
 
-        exit_match = re.fullmatch(
-            rf"exit\s+({IDENT_RE})",
-            line
-        )
+def is_digit(b):
+    return ord("0") <= b <= ord("9")
 
-        if exit_match:
-            name = exit_match.group(1)
 
-            if name not in symbols:
-                fail(line_no, f"variable '{name}' is not declared")
+def lex(data: bytes):
+    lines = []
+    tokens = []
 
-            value = builder.load(
-                symbols[name],
-                name=f"exit_{name}"
-            )
+    state = "START"
+    start = 0
+    start_col = 1
 
-            fmt_ptr = builder.bitcast(
-                fmt,
-                ir.PointerType(I8)
-            )
+    line = 1
+    col = 1
+    i = 0
 
-            builder.call(
-                printf,
-                [fmt_ptr, value]
-            )
+    brace_columns = []
 
-            builder.ret(ir.Constant(I32, 0))
-            exit_seen = True
-            continue
+    while i <= len(data):
+        b = data[i] if i < len(data) else None
 
-        if line.startswith("exit"):
-            fail(line_no, "invalid exit statement")
+        if state == "START":
+            if b is None:
+                if brace_columns:
+                    raise CompileError(
+                        f"line {line}:{brace_columns[0]}: "
+                        "'{' is not closed before the end of the line"
+                    )
+                break
 
-        assign_match = re.fullmatch(
-            rf"({IDENT_RE})\s*:=\s*(.+)",
-            line
-        )
+            elif b in (32, 9):
+                pass
 
-        if assign_match:
-            target = assign_match.group(1)
-            expression = assign_match.group(2).strip()
+            elif b == 10:
+                if brace_columns:
+                    raise CompileError(
+                        f"line {line}:{brace_columns[0]}: "
+                        "'{' is not closed before the end of the line"
+                    )
 
-            if target not in symbols:
-                fail(
-                    line_no,
-                    f"variable '{target}' is not declared"
+                tokens.append(
+                    Token("endline", "\n", line, col)
                 )
 
-            binary_match = re.fullmatch(
-                rf"({IDENT_RE}|-?\d+)\s*([+\-*])\s*({IDENT_RE}|-?\d+)",
-                expression
-            )
+                lines.append(tokens)
+                tokens = []
 
-            if binary_match:
-                left_token = binary_match.group(1)
-                operator = binary_match.group(2)
-                right_token = binary_match.group(3)
+                line += 1
+                col = 0
+                brace_columns = []
 
-                left = value_of(left_token, line_no)
-                right = value_of(right_token, line_no)
+            elif is_alpha(b):
+                state = "IDENT"
+                start = i
+                start_col = col
 
-                if operator == "+":
-                    result = builder.add(
-                        left,
-                        right,
-                        name="addtmp"
-                    )
-                elif operator == "-":
-                    result = builder.sub(
-                        left,
-                        right,
-                        name="subtmp"
-                    )
+            elif is_digit(b):
+                state = "NUMBER"
+                start = i
+                start_col = col
+
+            elif b == ord("{"):
+                brace_columns.append(col)
+
+                tokens.append(
+                    Token("block", "{", line, col)
+                )
+
+            elif b == ord("}"):
+                if brace_columns:
+                    brace_columns.pop()
+
+                tokens.append(
+                    Token("block", "}", line, col)
+                )
+
+            elif b == ord("+"):
+                tokens.append(
+                    Token("operator", "+", line, col)
+                )
+
+            elif b == ord("-"):
+                tokens.append(
+                    Token("operator", "-", line, col)
+                )
+
+            elif b == ord("*"):
+                tokens.append(
+                    Token("operator", "*", line, col)
+                )
+
+            elif b == ord(":"):
+                state = "COLON"
+                start_col = col
+
+            else:
+                if b > 127:
+                    char = f"0x{b:02x}"
                 else:
-                    result = builder.mul(
-                        left,
-                        right,
-                        name="multmp"
+                    char = chr(b)
+
+                raise CompileError(
+                    f"line {line}:{col}: "
+                    f"unexpected byte '{char}'"
+                )
+
+        elif state == "IDENT":
+            if (
+                b is not None
+                and (is_alpha(b) or is_digit(b))
+            ):
+                pass
+
+            else:
+                word = data[start:i].decode("ascii")
+                kind = KEYWORDS.get(
+                    word,
+                    "identifier"
+                )
+
+                tokens.append(
+                    Token(
+                        kind,
+                        word,
+                        line,
+                        start_col
                     )
-
-                builder.store(result, symbols[target])
-                continue
-
-            simple_match = re.fullmatch(
-                rf"({IDENT_RE}|-?\d+)",
-                expression
-            )
-
-            if simple_match:
-                value = value_of(
-                    simple_match.group(1),
-                    line_no
                 )
 
-                builder.store(
-                    value,
-                    symbols[target]
-                )
+                state = "START"
                 continue
 
-            fail(line_no, "invalid assignment expression")
+        elif state == "NUMBER":
+            if b is not None and is_digit(b):
+                pass
 
-        fail(line_no, "unparsable statement")
+            elif b is not None and is_alpha(b):
+                raise CompileError(
+                    f"line {line}:{start_col}: "
+                    "letter inside number"
+                )
 
-    if not exit_seen:
-        fail(len(lines) if lines else 1, "no exit statement")
+            else:
+                number = data[start:i].decode("ascii")
 
-    with open(output_path, "w") as f:
-        f.write(str(module))
+                tokens.append(
+                    Token(
+                        "number",
+                        number,
+                        line,
+                        start_col
+                    )
+                )
+
+                state = "START"
+                continue
+
+        elif state == "COLON":
+            if b == ord("="):
+                tokens.append(
+                    Token(
+                        "operator",
+                        ":=",
+                        line,
+                        start_col
+                    )
+                )
+
+                state = "START"
+
+            else:
+                raise CompileError(
+                    f"line {line}:{start_col}: "
+                    "':' must be followed by '='"
+                )
+
+        i += 1
+        col += 1
+
+    if tokens:
+        lines.append(tokens)
+
+    return lines
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(
-            "usage: python3 compiler.py <source> <output.ll>",
-            file=sys.stderr
-        )
-        sys.exit(1)
-
-    source_path = sys.argv[1]
-    output_path = sys.argv[2]
+    data = sys.stdin.buffer.read()
 
     try:
-        build_compiler(source_path, output_path)
-    except FileNotFoundError:
+        token_lines = lex(data)
+
+        for tokens in token_lines:
+            print(tokens)
+
+    except CompileError as error:
         print(
-            f"compilation error: source file '{source_path}' not found",
+            f"compilation error: {error}",
             file=sys.stderr
         )
         sys.exit(1)
