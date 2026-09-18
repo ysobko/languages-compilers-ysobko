@@ -13,6 +13,67 @@ class CompileError(Exception):
     pass
 
 
+class ProgramNode:
+    def __init__(self, statements, exit_node):
+        self.statements = statements
+        self.exit = exit_node
+
+
+class StmtNode:
+    pass
+
+
+class DeclNode(StmtNode):
+    def __init__(self, name, mutable, init, line, column):
+        self.name = name
+        self.mutable = mutable
+        self.init = init
+        self.line = line
+        self.column = column
+
+
+class AssignNode(StmtNode):
+    def __init__(self, name, value, line, column):
+        self.name = name
+        self.value = value
+        self.line = line
+        self.column = column
+
+
+class ExitNode:
+    def __init__(self, value, line, column):
+        self.value = value
+        self.line = line
+        self.column = column
+
+
+class ExprNode:
+    pass
+
+
+class BinOpNode(ExprNode):
+    def __init__(self, op, left, right, line, column):
+        self.op = op
+        self.left = left
+        self.right = right
+        self.line = line
+        self.column = column
+
+
+class VarNode(ExprNode):
+    def __init__(self, name, line, column):
+        self.name = name
+        self.line = line
+        self.column = column
+
+
+class ConstNode(ExprNode):
+    def __init__(self, value, line, column):
+        self.value = value
+        self.line = line
+        self.column = column
+
+
 class Token:
     def __init__(self, kind, text, line, column):
         self.kind = kind
@@ -232,6 +293,299 @@ def error_at(token, message):
     raise CompileError(
         f"line {token.line}:{token.column}: {message}"
     )
+
+
+class Parser:
+    def __init__(self, token_lines):
+        self.token_lines = token_lines
+        self.tokens = []
+        self.position = 0
+
+    def set_line(self, tokens):
+        self.tokens = [
+            token
+            for token in tokens
+            if token.kind != "endline"
+        ]
+        self.position = 0
+
+    def peek(self):
+        if self.position >= len(self.tokens):
+            return None
+
+        return self.tokens[self.position]
+
+    def eat(self, text=None, kind=None):
+        token = self.peek()
+
+        if token is None:
+            raise CompileError(
+                "unexpected end of line"
+            )
+
+        if text is not None and token.text != text:
+            error_at(
+                token,
+                f"expected '{text}'"
+            )
+
+        if kind is not None and token.kind != kind:
+            error_at(
+                token,
+                f"expected {kind}"
+            )
+
+        self.position += 1
+        return token
+
+    def parse_operand(self):
+        token = self.peek()
+
+        if token is None:
+            last = self.tokens[-1]
+             
+            raise CompileError(
+                f"line {last.line}:" 
+                f"{last.column + len(last.text)}: "
+                "expected number or variable"
+            )
+
+        if token.kind == "number":
+            self.eat(kind="number")
+
+            return ConstNode(
+                int(token.text),
+                token.line,
+                token.column
+            )
+
+        if token.kind == "identifier":
+            self.eat(kind="identifier")
+
+            return VarNode(
+                token.text,
+                token.line,
+                token.column
+            )
+
+        error_at(
+            token,
+            "expected a number or variable"
+        )
+
+    def parse_value(self):
+        left = self.parse_operand()
+
+        token = self.peek()
+
+        if (
+            token is not None
+            and token.text in ("+", "-", "*")
+        ):
+            operator = self.eat()
+            right = self.parse_operand()
+
+            return BinOpNode(
+                operator.text,
+                left,
+                right,
+                operator.line,
+                operator.column
+            )
+
+        return left
+
+    def parse_decl(self):
+        start = self.eat(text="i32")
+
+        mutable = False
+
+        token = self.peek()
+
+        if token is not None and token.text == "mut":
+            self.eat(text="mut")
+            mutable = True
+
+        name_token = self.peek()
+
+        if name_token is None:
+            raise CompileError(
+                f"line {start.line}:{start.column + len(start.text)}: "
+                "expected variable name"
+            )
+
+        name_token = self.eat(kind="identifier")
+
+        token = self.peek()
+
+        if token is None:
+            raise CompileError(
+                f"line {name_token.line}:"
+                f"{name_token.column + len(name_token.text)}: "
+                "expected '{'"
+            )
+
+        self.eat(text="{")
+
+        value = self.parse_value()
+
+        token = self.peek()
+
+        if token is None:
+            raise CompileError(
+                f"line {start.line}:"
+                f"{self.end_column()}: expected '}}'"
+            )
+
+        self.eat(text="}")
+
+        return DeclNode(
+            name_token.text,
+            mutable,
+            value,
+            start.line,
+            start.column
+        )
+
+    def parse_assign(self):
+        name_token = self.eat(kind="identifier")
+
+        token = self.peek()
+
+        if token is None:
+            raise CompileError(
+                f"line {name_token.line}:"
+                f"{name_token.column + len(name_token.text)}: "
+                "expected ':='"
+            )
+
+        self.eat(text=":=")
+
+        value = self.parse_value()
+
+        return AssignNode(
+            name_token.text,
+            value,
+            name_token.line,
+            name_token.column
+        )
+
+    def parse_exit(self):
+        start = self.eat(text="exit")
+
+        value = self.parse_operand()
+
+        return ExitNode(
+            value,
+            start.line,
+            start.column
+        )
+
+    def end_column(self):
+        if not self.tokens:
+            return 1
+
+        last = self.tokens[-1]
+        return last.column + len(last.text)
+
+    def ensure_end(self):
+        token = self.peek()
+
+        if token is not None:
+            error_at(
+                token,
+                "extra tokens after statement"
+            )
+
+    def parse_program(self):
+        statements = []
+        exit_node = None
+
+        for raw_tokens in self.token_lines:
+            self.set_line(raw_tokens)
+
+            if not self.tokens:
+                continue
+
+            first = self.peek()
+
+            if exit_node is not None:
+                error_at(
+                    first,
+                    "exit must be the last statement"
+                )
+
+            if first.text == "i32":
+                node = self.parse_decl()
+                self.ensure_end()
+                statements.append(node)
+                continue
+
+            if first.text == "exit":
+                exit_node = self.parse_exit()
+                self.ensure_end()
+                continue
+
+            if first.kind == "identifier":
+                node = self.parse_assign()
+                self.ensure_end()
+                statements.append(node)
+                continue
+
+            error_at(
+                first,
+                "invalid statement"
+            )
+
+        if exit_node is None:
+            raise CompileError(
+                "line 1:1: program has no exit statement"
+            )
+
+        return ProgramNode(
+            statements,
+            exit_node
+        )
+
+
+def print_expr(node, indent):
+    prefix = " " * indent
+
+    if isinstance(node, ConstNode):
+        print(f"{prefix}Const {node.value}")
+        return
+
+    if isinstance(node, VarNode):
+        print(f"{prefix}Var {node.name}")
+        return
+
+    if isinstance(node, BinOpNode):
+        print(f"{prefix}BinOp {node.op}")
+        print_expr(node.left, indent + 2)
+        print_expr(node.right, indent + 2)
+
+
+def print_ast(program):
+    print("Program")
+
+    for node in program.statements:
+        if isinstance(node, DeclNode):
+            kind = "mut" if node.mutable else "const"
+            print(f"  Decl {node.name} {kind}")
+            print_expr(node.init, 4)
+
+        elif isinstance(node, AssignNode):
+            print(f"  Assign {node.name}")
+            print_expr(node.value, 4)
+
+    print("  Exit")
+    print_expr(program.exit.value, 4)
+
+
+def parse_program(data):
+    token_lines = lex(data)
+    parser = Parser(token_lines)
+    return parser.parse_program()
 
 
 def compile_program(data):
@@ -556,6 +910,37 @@ def compile_program(data):
 
 
 def main():
+    ast_mode = (
+        len(sys.argv) == 3
+        and sys.argv[1] == "--ast"
+    )
+
+    if ast_mode:
+        input_path = sys.argv[2]
+
+        try:
+            with open(input_path, "rb") as source:
+                data = source.read()
+
+            program = parse_program(data)
+            print_ast(program)
+
+        except CompileError as error:
+            print(
+                f"compilation error: {error}",
+                file=sys.stderr
+            )
+            sys.exit(1)
+
+        except FileNotFoundError:
+            print(
+                "compilation error: input file not found",
+                file=sys.stderr
+            )
+            sys.exit(1)
+
+        return
+
     if len(sys.argv) != 3:
         print(
             "usage: python3 compiler.py input.txt output.ll",
