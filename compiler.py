@@ -343,9 +343,9 @@ class Parser:
 
         if token is None:
             last = self.tokens[-1]
-             
+
             raise CompileError(
-                f"line {last.line}:" 
+                f"line {last.line}:"
                 f"{last.column + len(last.text)}: "
                 "expected number or variable"
             )
@@ -410,7 +410,8 @@ class Parser:
 
         if name_token is None:
             raise CompileError(
-                f"line {start.line}:{start.column + len(start.text)}: "
+                f"line {start.line}:"
+                f"{start.column + len(start.text)}: "
                 "expected variable name"
             )
 
@@ -481,6 +482,20 @@ class Parser:
             start.column
         )
 
+    def parse_statement(self):
+        token = self.peek()
+
+        if token.text == "i32":
+            return self.parse_decl()
+
+        if token.kind == "identifier":
+            return self.parse_assign()
+
+        error_at(
+            token,
+            "invalid statement"
+        )
+
     def end_column(self):
         if not self.tokens:
             return 1
@@ -515,27 +530,14 @@ class Parser:
                     "exit must be the last statement"
                 )
 
-            if first.text == "i32":
-                node = self.parse_decl()
-                self.ensure_end()
-                statements.append(node)
-                continue
-
             if first.text == "exit":
                 exit_node = self.parse_exit()
                 self.ensure_end()
                 continue
 
-            if first.kind == "identifier":
-                node = self.parse_assign()
-                self.ensure_end()
-                statements.append(node)
-                continue
-
-            error_at(
-                first,
-                "invalid statement"
-            )
+            node = self.parse_statement()
+            self.ensure_end()
+            statements.append(node)
 
         if exit_node is None:
             raise CompileError(
@@ -546,6 +548,194 @@ class Parser:
             statements,
             exit_node
         )
+
+
+class CodeGen:
+    def __init__(self):
+        self.module = ir.Module(name="practice3")
+        self.module.triple = llvm.get_default_triple()
+
+        main_type = ir.FunctionType(I32, [])
+
+        self.main_function = ir.Function(
+            self.module,
+            main_type,
+            name="main"
+        )
+
+        entry = self.main_function.append_basic_block(
+            "entry"
+        )
+
+        self.builder = ir.IRBuilder(entry)
+
+        printf_type = ir.FunctionType(
+            I32,
+            [ir.PointerType(I8)],
+            var_arg=True
+        )
+
+        self.printf = ir.Function(
+            self.module,
+            printf_type,
+            name="printf"
+        )
+
+        message = b"Program exit with result %d\n\0"
+        message_type = ir.ArrayType(
+            I8,
+            len(message)
+        )
+
+        self.fmt = ir.GlobalVariable(
+            self.module,
+            message_type,
+            name="fmt"
+        )
+
+        self.fmt.linkage = "private"
+        self.fmt.global_constant = True
+        self.fmt.initializer = ir.Constant(
+            message_type,
+            bytearray(message)
+        )
+
+        self.symbols = {}
+        self.mutable = set()
+
+    def generate_expr(self, node):
+        if isinstance(node, ConstNode):
+            return ir.Constant(
+                I32,
+                node.value
+            )
+
+        if isinstance(node, VarNode):
+            if node.name not in self.symbols:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"variable '{node.name}' is "
+                    "used before its declaration"
+                )
+
+            return self.builder.load(
+                self.symbols[node.name],
+                name=f"load_{node.name}"
+            )
+
+        if isinstance(node, BinOpNode):
+            left = self.generate_expr(node.left)
+            right = self.generate_expr(node.right)
+
+            if node.op == "+":
+                return self.builder.add(
+                    left,
+                    right,
+                    name="addtmp"
+                )
+
+            if node.op == "-":
+                return self.builder.sub(
+                    left,
+                    right,
+                    name="subtmp"
+                )
+
+            if node.op == "*":
+                return self.builder.mul(
+                    left,
+                    right,
+                    name="multmp"
+                )
+
+        raise CompileError(
+            "unknown expression"
+        )
+
+    def generate_decl(self, node):
+        if node.name in self.symbols:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is already declared"
+            )
+
+        value = self.generate_expr(node.init)
+
+        pointer = self.builder.alloca(
+            I32,
+            name=node.name
+        )
+
+        self.builder.store(
+            value,
+            pointer
+        )
+
+        self.symbols[node.name] = pointer
+
+        if node.mutable:
+            self.mutable.add(node.name)
+
+    def generate_assign(self, node):
+        if node.name not in self.symbols:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is "
+                "used before its declaration"
+            )
+
+        if node.name not in self.mutable:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"cannot assign to '{node.name}': "
+                "it is not mut"
+            )
+
+        value = self.generate_expr(node.value)
+
+        self.builder.store(
+            value,
+            self.symbols[node.name]
+        )
+
+    def generate_exit(self, node):
+        value = self.generate_expr(node.value)
+
+        zero = ir.Constant(I32, 0)
+
+        fmt_pointer = self.builder.gep(
+            self.fmt,
+            [zero, zero],
+            inbounds=True
+        )
+
+        self.builder.call(
+            self.printf,
+            [fmt_pointer, value]
+        )
+
+        self.builder.ret(value)
+
+    def generate_statement(self, node):
+        if isinstance(node, DeclNode):
+            self.generate_decl(node)
+            return
+
+        if isinstance(node, AssignNode):
+            self.generate_assign(node)
+            return
+
+        raise CompileError(
+            "unknown statement"
+        )
+
+    def generate_program(self, program):
+        for statement in program.statements:
+            self.generate_statement(statement)
+
+        self.generate_exit(program.exit)
+
+        return str(self.module)
 
 
 def print_expr(node, indent):
@@ -589,324 +779,9 @@ def parse_program(data):
 
 
 def compile_program(data):
-    token_lines = lex(data)
-
-    module = ir.Module(name="practice2")
-    module.triple = llvm.get_default_triple()
-
-    main_type = ir.FunctionType(I32, [])
-
-    main_function = ir.Function(
-        module,
-        main_type,
-        name="main"
-    )
-
-    entry = main_function.append_basic_block("entry")
-    builder = ir.IRBuilder(entry)
-
-    printf_type = ir.FunctionType(
-        I32,
-        [ir.PointerType(I8)],
-        var_arg=True
-    )
-
-    printf = ir.Function(
-        module,
-        printf_type,
-        name="printf"
-    )
-
-    message = b"Program exit with result %d\n\0"
-    message_type = ir.ArrayType(I8, len(message))
-
-    fmt = ir.GlobalVariable(
-        module,
-        message_type,
-        name="fmt"
-    )
-
-    fmt.linkage = "private"
-    fmt.global_constant = True
-
-    fmt.initializer = ir.Constant(
-        message_type,
-        bytearray(message)
-    )
-
-    symbols = {}
-    mutable = set()
-    exit_seen = False
-
-    def read_value(token):
-        if token.kind == "number":
-            return ir.Constant(
-                I32,
-                int(token.text)
-            )
-
-        if token.kind == "identifier":
-            if token.text not in symbols:
-                error_at(
-                    token,
-                    f"variable '{token.text}' is "
-                    "used before its declaration"
-                )
-
-            return builder.load(
-                symbols[token.text],
-                name=f"load_{token.text}"
-            )
-
-        error_at(
-            token,
-            "expected a number or variable"
-        )
-
-    def read_expression(tokens):
-        if len(tokens) == 1:
-            return read_value(tokens[0])
-
-        if len(tokens) != 3:
-            error_at(
-                tokens[0],
-                "invalid expression"
-            )
-
-        left_token = tokens[0]
-        operator_token = tokens[1]
-        right_token = tokens[2]
-
-        if (
-            operator_token.kind != "operator"
-            or operator_token.text not in ("+", "-", "*")
-        ):
-            error_at(
-                operator_token,
-                "expected +, - or *"
-            )
-
-        left = read_value(left_token)
-        right = read_value(right_token)
-
-        if operator_token.text == "+":
-            return builder.add(
-                left,
-                right,
-                name="addtmp"
-            )
-
-        if operator_token.text == "-":
-            return builder.sub(
-                left,
-                right,
-                name="subtmp"
-            )
-
-        return builder.mul(
-            left,
-            right,
-            name="multmp"
-        )
-
-    for raw_tokens in token_lines:
-        tokens = [
-            token
-            for token in raw_tokens
-            if token.kind != "endline"
-        ]
-
-        if not tokens:
-            continue
-
-        if exit_seen:
-            error_at(
-                tokens[0],
-                "exit must be the last statement"
-            )
-
-        if tokens[0].text == "i32":
-            position = 1
-            is_mutable = False
-
-            if (
-                position < len(tokens)
-                and tokens[position].text == "mut"
-            ):
-                is_mutable = True
-                position += 1
-
-            if position >= len(tokens):
-                error_at(
-                    tokens[0],
-                    "expected variable name"
-                )
-
-            name_token = tokens[position]
-
-            if name_token.kind != "identifier":
-                error_at(
-                    name_token,
-                    "expected variable name"
-                )
-
-            name = name_token.text
-
-            if name in symbols:
-                error_at(
-                    name_token,
-                    f"variable '{name}' is already declared"
-                )
-
-            position += 1
-
-            if (
-                position >= len(tokens)
-                or tokens[position].text != "{"
-            ):
-                error_at(
-                    name_token,
-                    f"variable '{name}' needs an initialiser in {{}}"
-                )
-
-            position += 1
-            expression_start = position
-
-            while (
-                position < len(tokens)
-                and tokens[position].text != "}"
-            ):
-                position += 1
-
-            if position >= len(tokens):
-                error_at(
-                    tokens[expression_start - 1],
-                    "'{' is not closed"
-                )
-
-            expression_tokens = tokens[
-                expression_start:position
-            ]
-
-            if not expression_tokens:
-                error_at(
-                    tokens[position],
-                    "initializer cannot be empty"
-                )
-
-            value = read_expression(
-                expression_tokens
-            )
-
-            position += 1
-
-            if position != len(tokens):
-                error_at(
-                    tokens[position],
-                    "extra tokens after declaration"
-                )
-
-            pointer = builder.alloca(
-                I32,
-                name=name
-            )
-
-            builder.store(
-                value,
-                pointer
-            )
-
-            symbols[name] = pointer
-
-            if is_mutable:
-                mutable.add(name)
-
-            continue
-
-        if tokens[0].text == "exit":
-            if len(tokens) != 2:
-                error_at(
-                    tokens[0],
-                    "exit expects one value"
-                )
-
-            value = read_value(tokens[1])
-
-            zero = ir.Constant(I32, 0)
-
-            fmt_pointer = builder.gep(
-                fmt,
-                [zero, zero],
-                inbounds=True
-            )
-
-            builder.call(
-                printf,
-                [fmt_pointer, value]
-            )
-
-            builder.ret(value)
-
-            exit_seen = True
-            continue
-
-        if tokens[0].kind == "identifier":
-            name_token = tokens[0]
-            name = name_token.text
-
-            if name not in symbols:
-                error_at(
-                    name_token,
-                    f"variable '{name}' is "
-                    "used before its declaration"
-                )
-
-            if (
-                len(tokens) < 2
-                or tokens[1].text != ":="
-            ):
-                error_at(
-                    name_token,
-                    "invalid statement"
-                )
-
-            if name not in mutable:
-                error_at(
-                    name_token,
-                    f"cannot assign to '{name}': "
-                    "it is not mut"
-                )
-
-            expression_tokens = tokens[2:]
-
-            if not expression_tokens:
-                error_at(
-                    tokens[1],
-                    "assignment needs a value"
-                )
-
-            value = read_expression(
-                expression_tokens
-            )
-
-            builder.store(
-                value,
-                symbols[name]
-            )
-
-            continue
-
-        error_at(
-            tokens[0],
-            "invalid statement"
-        )
-
-    if not exit_seen:
-        raise CompileError(
-            "line 1:1: program has no exit statement"
-        )
-
-    return str(module)
+    program = parse_program(data)
+    codegen = CodeGen()
+    return codegen.generate_program(program)
 
 
 def main():
