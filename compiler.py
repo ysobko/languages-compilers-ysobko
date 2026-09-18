@@ -166,7 +166,6 @@ def lex(data: bytes):
 
             elif b == ord("{"):
                 brace_columns.append(col)
-
                 tokens.append(
                     Token("block", "{", line, col)
                 )
@@ -338,7 +337,7 @@ class Parser:
         self.position += 1
         return token
 
-    def parse_operand(self):
+    def parse_factor(self):
         token = self.peek()
 
         if token is None:
@@ -373,19 +372,37 @@ class Parser:
             "expected a number or variable"
         )
 
-    def parse_value(self):
-        left = self.parse_operand()
+    def parse_term(self):
+        left = self.parse_factor()
 
-        token = self.peek()
-
-        if (
-            token is not None
-            and token.text in ("+", "-", "*")
+        while (
+            self.peek() is not None
+            and self.peek().text == "*"
         ):
             operator = self.eat()
-            right = self.parse_operand()
+            right = self.parse_factor()
 
-            return BinOpNode(
+            left = BinOpNode(
+                operator.text,
+                left,
+                right,
+                operator.line,
+                operator.column
+            )
+
+        return left
+
+    def parse_expr(self):
+        left = self.parse_term()
+
+        while (
+            self.peek() is not None
+            and self.peek().text in ("+", "-")
+        ):
+            operator = self.eat()
+            right = self.parse_term()
+
+            left = BinOpNode(
                 operator.text,
                 left,
                 right,
@@ -428,7 +445,7 @@ class Parser:
 
         self.eat(text="{")
 
-        value = self.parse_value()
+        value = self.parse_expr()
 
         token = self.peek()
 
@@ -462,7 +479,7 @@ class Parser:
 
         self.eat(text=":=")
 
-        value = self.parse_value()
+        value = self.parse_expr()
 
         return AssignNode(
             name_token.text,
@@ -474,7 +491,7 @@ class Parser:
     def parse_exit(self):
         start = self.eat(text="exit")
 
-        value = self.parse_operand()
+        value = self.parse_factor()
 
         return ExitNode(
             value,
