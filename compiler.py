@@ -18,6 +18,9 @@ class ProgramNode:
         self.statements = statements
         self.exit = exit_node
 
+    def accept(self, visitor):
+        return visitor.visit_program(self)
+
 
 class StmtNode:
     pass
@@ -31,6 +34,9 @@ class DeclNode(StmtNode):
         self.line = line
         self.column = column
 
+    def accept(self, visitor):
+        return visitor.visit_decl(self)
+
 
 class AssignNode(StmtNode):
     def __init__(self, name, value, line, column):
@@ -39,12 +45,18 @@ class AssignNode(StmtNode):
         self.line = line
         self.column = column
 
+    def accept(self, visitor):
+        return visitor.visit_assign(self)
+
 
 class ExitNode:
     def __init__(self, value, line, column):
         self.value = value
         self.line = line
         self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_exit(self)
 
 
 class ExprNode:
@@ -59,6 +71,9 @@ class BinOpNode(ExprNode):
         self.line = line
         self.column = column
 
+    def accept(self, visitor):
+        return visitor.visit_binop(self)
+
 
 class VarNode(ExprNode):
     def __init__(self, name, line, column):
@@ -66,12 +81,18 @@ class VarNode(ExprNode):
         self.line = line
         self.column = column
 
+    def accept(self, visitor):
+        return visitor.visit_var(self)
+
 
 class ConstNode(ExprNode):
     def __init__(self, value, line, column):
         self.value = value
         self.line = line
         self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_const(self)
 
 
 class Token:
@@ -288,6 +309,19 @@ def lex(data: bytes):
     return lines
 
 
+def print_tokens(token_lines):
+    for line in token_lines:
+        for token in line:
+            if token.kind == "endline":
+                continue
+
+            print(
+                f"{token.text}\t"
+                f"{token.kind}\t"
+                f"{token.line}:{token.column}"
+            )
+
+
 def error_at(token, message):
     raise CompileError(
         f"line {token.line}:{token.column}: {message}"
@@ -337,15 +371,20 @@ class Parser:
         self.position += 1
         return token
 
+    def end_column(self):
+        if not self.tokens:
+            return 1
+
+        last = self.tokens[-1]
+        return last.column + len(last.text)
+
     def parse_factor(self):
         token = self.peek()
 
         if token is None:
-            last = self.tokens[-1]
-
             raise CompileError(
-                f"line {last.line}:"
-                f"{last.column + len(last.text)}: "
+                f"line {self.tokens[-1].line}:"
+                f"{self.end_column()}: "
                 "expected number or variable"
             )
 
@@ -416,7 +455,6 @@ class Parser:
         start = self.eat(text="i32")
 
         mutable = False
-
         token = self.peek()
 
         if token is not None and token.text == "mut":
@@ -427,8 +465,7 @@ class Parser:
 
         if name_token is None:
             raise CompileError(
-                f"line {start.line}:"
-                f"{start.column + len(start.text)}: "
+                f"line {start.line}:{self.end_column()}: "
                 "expected variable name"
             )
 
@@ -440,7 +477,15 @@ class Parser:
             raise CompileError(
                 f"line {name_token.line}:"
                 f"{name_token.column + len(name_token.text)}: "
-                "expected '{'"
+                f"variable '{name_token.text}' "
+                "needs an initialiser in {}"
+            )
+
+        if token.text != "{":
+            error_at(
+                token,
+                f"variable '{name_token.text}' "
+                "needs an initialiser in {}"
             )
 
         self.eat(text="{")
@@ -461,8 +506,8 @@ class Parser:
             name_token.text,
             mutable,
             value,
-            start.line,
-            start.column
+            name_token.line,
+            name_token.column
         )
 
     def parse_assign(self):
@@ -475,6 +520,12 @@ class Parser:
                 f"line {name_token.line}:"
                 f"{name_token.column + len(name_token.text)}: "
                 "expected ':='"
+            )
+
+        if token.text != ":=":
+            error_at(
+                token,
+                f"expected ':=' after '{name_token.text}'"
             )
 
         self.eat(text=":=")
@@ -490,7 +541,6 @@ class Parser:
 
     def parse_exit(self):
         start = self.eat(text="exit")
-
         value = self.parse_factor()
 
         return ExitNode(
@@ -512,13 +562,6 @@ class Parser:
             token,
             "invalid statement"
         )
-
-    def end_column(self):
-        if not self.tokens:
-            return 1
-
-        last = self.tokens[-1]
-        return last.column + len(last.text)
 
     def ensure_end(self):
         token = self.peek()
@@ -620,63 +663,22 @@ class CodeGen:
         self.symbols = {}
         self.mutable = set()
 
-    def generate_expr(self, node):
-        if isinstance(node, ConstNode):
-            return ir.Constant(
-                I32,
-                node.value
-            )
+    def visit_program(self, node):
+        for statement in node.statements:
+            statement.accept(self)
 
-        if isinstance(node, VarNode):
-            if node.name not in self.symbols:
-                raise CompileError(
-                    f"line {node.line}:{node.column}: "
-                    f"variable '{node.name}' is "
-                    "used before its declaration"
-                )
+        node.exit.accept(self)
 
-            return self.builder.load(
-                self.symbols[node.name],
-                name=f"load_{node.name}"
-            )
+        return str(self.module)
 
-        if isinstance(node, BinOpNode):
-            left = self.generate_expr(node.left)
-            right = self.generate_expr(node.right)
-
-            if node.op == "+":
-                return self.builder.add(
-                    left,
-                    right,
-                    name="addtmp"
-                )
-
-            if node.op == "-":
-                return self.builder.sub(
-                    left,
-                    right,
-                    name="subtmp"
-                )
-
-            if node.op == "*":
-                return self.builder.mul(
-                    left,
-                    right,
-                    name="multmp"
-                )
-
-        raise CompileError(
-            "unknown expression"
-        )
-
-    def generate_decl(self, node):
+    def visit_decl(self, node):
         if node.name in self.symbols:
             raise CompileError(
                 f"line {node.line}:{node.column}: "
                 f"variable '{node.name}' is already declared"
             )
 
-        value = self.generate_expr(node.init)
+        value = node.init.accept(self)
 
         pointer = self.builder.alloca(
             I32,
@@ -693,7 +695,7 @@ class CodeGen:
         if node.mutable:
             self.mutable.add(node.name)
 
-    def generate_assign(self, node):
+    def visit_assign(self, node):
         if node.name not in self.symbols:
             raise CompileError(
                 f"line {node.line}:{node.column}: "
@@ -708,15 +710,15 @@ class CodeGen:
                 "it is not mut"
             )
 
-        value = self.generate_expr(node.value)
+        value = node.value.accept(self)
 
         self.builder.store(
             value,
             self.symbols[node.name]
         )
 
-    def generate_exit(self, node):
-        value = self.generate_expr(node.value)
+    def visit_exit(self, node):
+        value = node.value.accept(self)
 
         zero = ir.Constant(I32, 0)
 
@@ -733,60 +735,125 @@ class CodeGen:
 
         self.builder.ret(value)
 
-    def generate_statement(self, node):
-        if isinstance(node, DeclNode):
-            self.generate_decl(node)
-            return
+    def visit_binop(self, node):
+        left = node.left.accept(self)
+        right = node.right.accept(self)
 
-        if isinstance(node, AssignNode):
-            self.generate_assign(node)
-            return
+        if node.op == "+":
+            return self.builder.add(
+                left,
+                right,
+                name="addtmp"
+            )
+
+        if node.op == "-":
+            return self.builder.sub(
+                left,
+                right,
+                name="subtmp"
+            )
+
+        if node.op == "*":
+            return self.builder.mul(
+                left,
+                right,
+                name="multmp"
+            )
 
         raise CompileError(
-            "unknown statement"
+            f"line {node.line}:{node.column}: "
+            f"unknown operator '{node.op}'"
         )
 
-    def generate_program(self, program):
-        for statement in program.statements:
-            self.generate_statement(statement)
+    def visit_var(self, node):
+        if node.name not in self.symbols:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is "
+                "used before its declaration"
+            )
 
-        self.generate_exit(program.exit)
+        return self.builder.load(
+            self.symbols[node.name],
+            name=f"load_{node.name}"
+        )
 
-        return str(self.module)
+    def visit_const(self, node):
+        return ir.Constant(
+            I32,
+            node.value
+        )
 
 
-def print_expr(node, indent):
-    prefix = " " * indent
+class AstPrinter:
+    def __init__(self):
+        self.indent = 0
 
-    if isinstance(node, ConstNode):
-        print(f"{prefix}Const {node.value}")
-        return
+    def write(self, text):
+        print(
+            f"{' ' * self.indent}{text}"
+        )
 
-    if isinstance(node, VarNode):
-        print(f"{prefix}Var {node.name}")
-        return
+    def visit_program(self, node):
+        self.write("Program")
+        self.indent += 2
 
-    if isinstance(node, BinOpNode):
-        print(f"{prefix}BinOp {node.op}")
-        print_expr(node.left, indent + 2)
-        print_expr(node.right, indent + 2)
+        for statement in node.statements:
+            statement.accept(self)
+
+        node.exit.accept(self)
+        self.indent -= 2
+
+    def visit_decl(self, node):
+        kind = "mut" if node.mutable else "const"
+        self.write(
+            f"Decl {node.name} {kind}"
+        )
+
+        self.indent += 2
+        node.init.accept(self)
+        self.indent -= 2
+
+    def visit_assign(self, node):
+        self.write(
+            f"Assign {node.name}"
+        )
+
+        self.indent += 2
+        node.value.accept(self)
+        self.indent -= 2
+
+    def visit_exit(self, node):
+        self.write("Exit")
+
+        self.indent += 2
+        node.value.accept(self)
+        self.indent -= 2
+
+    def visit_binop(self, node):
+        self.write(
+            f"BinOp {node.op}"
+        )
+
+        self.indent += 2
+        node.left.accept(self)
+        node.right.accept(self)
+        self.indent -= 2
+
+    def visit_var(self, node):
+        self.write(
+            f"Var {node.name}"
+        )
+
+    def visit_const(self, node):
+        self.write(
+            f"Const {node.value}"
+        )
 
 
 def print_ast(program):
-    print("Program")
-
-    for node in program.statements:
-        if isinstance(node, DeclNode):
-            kind = "mut" if node.mutable else "const"
-            print(f"  Decl {node.name} {kind}")
-            print_expr(node.init, 4)
-
-        elif isinstance(node, AssignNode):
-            print(f"  Assign {node.name}")
-            print_expr(node.value, 4)
-
-    print("  Exit")
-    print_expr(program.exit.value, 4)
+    printer = AstPrinter()
+    program.accept(printer)
 
 
 def parse_program(data):
@@ -798,14 +865,45 @@ def parse_program(data):
 def compile_program(data):
     program = parse_program(data)
     codegen = CodeGen()
-    return codegen.generate_program(program)
+    return program.accept(codegen)
 
 
 def main():
+    tokens_mode = (
+        len(sys.argv) == 3
+        and sys.argv[1] == "--tokens"
+    )
+
     ast_mode = (
         len(sys.argv) == 3
         and sys.argv[1] == "--ast"
     )
+
+    if tokens_mode:
+        input_path = sys.argv[2]
+
+        try:
+            with open(input_path, "rb") as source:
+                data = source.read()
+
+            token_lines = lex(data)
+            print_tokens(token_lines)
+
+        except CompileError as error:
+            print(
+                f"compilation error: {error}",
+                file=sys.stderr
+            )
+            sys.exit(1)
+
+        except FileNotFoundError:
+            print(
+                "compilation error: input file not found",
+                file=sys.stderr
+            )
+            sys.exit(1)
+
+        return
 
     if ast_mode:
         input_path = sys.argv[2]
@@ -860,7 +958,6 @@ def main():
             f"compilation error: {error}",
             file=sys.stderr
         )
-
         sys.exit(1)
 
     except FileNotFoundError:
@@ -871,7 +968,6 @@ def main():
             "compilation error: input file not found",
             file=sys.stderr
         )
-
         sys.exit(1)
 
 

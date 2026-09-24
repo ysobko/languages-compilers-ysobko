@@ -1,83 +1,41 @@
-AI Usage Log
+AI Usage Log — Practice 3
 
-AI tool: ChatGPT (OpenAI)
+I used AI throughout Practice 3 to help me understand and implement the tasks step by step.
 
-Tasks solved with AI:
+AI helped me with:
+- Reading the Practice 3 requirements and explaining what I needed to do for each task.
+- Writing and checking the EBNF grammar for Task 1.
+- Understanding how the parser and AST should work.
+- Implementing the AST classes and the hand-written recursive-descent parser for Task 2.
+- Implementing and checking the --ast output.
+- Testing parser errors and checking their line:column positions.
+- Refactoring the compiler for Task 3 so code generation walks the AST instead of working directly with tokens.
+- Implementing and testing semantic checks such as using a variable before declaration, duplicate declarations, and assigning to a const variable.
+- Implementing Task 4 expressions with +, - and *.
+- Implementing precedence so * binds tighter than + and -.
+- Implementing left associativity for operators of the same precedence.
+- Updating grammar.ebnf for expr, term and factor.
+- Creating and checking the required valid and invalid tests for Task 4.
+- Comparing the tests with the assignment requirements and changing them when some required cases were missing.
+- Testing 2 + 3 * 4 and checking that the result was 14 and the AST had the correct structure.
+- Testing 20 - 5 - 3 and checking that it was parsed left-associatively and produced 12.
+- Checking that the Practice 2 program still worked and produced 70.
+- Creating and testing the required Task 4 example and checking through lli that it produced 120.
+- Reviewing the final submission requirements and checking that all required parts were completed.
 
-I used ChatGPT during Practice 2 as a learning and debugging assistant.
+Main prompts I used:
+- Help me do Practice 3 step by step.
+- Help me write the grammar for Task 1.
+- Help me implement the parser and AST.
+- Give me the implementation of compiler.py without comments.
+- Help me test the AST and parser errors.
+- Help me implement Task 3 code generation from the AST.
+- Explain what we did in Task 2 and Task 3.
+- Help me implement Task 4.
+- Help me test precedence and left associativity.
+- Help me create the required valid and invalid tests.
+- Check if my tests cover the exact requirements.
+- Carefully review all assignment requirements and compare them with what we implemented.
+- Check if everything from the Submission section is completed.
 
-I asked ChatGPT to explain the whole practice step by step and in simple language, including what each part of the lexer and compiler does and why it is needed.
-
-AI was used for:
-- understanding the requirements of Task 1 and Task 2;
-- understanding how a lexer state machine works;
-- understanding how the source code is processed byte by byte;
-- implementing lexer states for identifiers, numbers, operators, blocks, and keywords;
-- implementing tokens with kind, text, line, and column;
-- understanding and debugging lexical errors;
-- checking the lexer output using the worked example from the assignment;
-- understanding the new syntax with i32, mut, initialisers, assignments, arithmetic operations, and exit;
-- implementing declaration-before-use checks;
-- implementing const and mutable variable checks;
-- understanding how expressions are processed using tokens;
-- generating LLVM IR using the llvmlite.ir builder API;
-- debugging Python syntax and indentation problems;
-- debugging compiler error messages and line/column positions;
-- creating and checking 5 valid and 5 invalid test programs;
-- debugging incorrect line numbers caused by extra blank lines in test files;
-- checking that the implementation follows the requirements of the Practice 2 assignment;
-- using Git and separate commits for Task 1 and Task 2.
-
-Prompts used:
-
-1. "Let's do Practice 2 step by step. Explain everything to me."
-
-2. "Let's do Task 1 first."
-
-3. "Explain how the lexer state machine works."
-
-4. "What do I need to write in compiler.py?"
-
-5. "How do I check if the lexer works correctly?"
-
-6. "Let's check the worked example from the assignment with the token list."
-
-7. "How do I test the lexer errors?"
-
-8. "Let's commit Task 1 first and then continue with Task 2."
-
-9. "Now let's do Task 2 step by step."
-
-10. "Explain what I need to do in Task 2."
-
-11. "Explain how i32, mut, initialisers, assignments and exit work."
-
-12. "How do I implement declaration before use?"
-
-13. "How do I check that a const variable cannot be assigned a new value?"
-
-14. "How do I implement the +, - and * operations?"
-
-15. "How do I generate this using the llvmlite.ir builder?"
-
-16. "I have a TabError in compiler.py. How do I fix it?"
-
-17. "Why is the missing initialiser error message printed incorrectly?"
-
-18. "Give me the full final compiler.py without comments."
-
-19. "How do I test the example from the PDF so that it prints Program exit with result 70?"
-
-20. "Let's create the required 5 valid and 5 invalid tests."
-
-21. "Why do the valid tests show FAIL even though expected and actual look the same?"
-
-22. "How do I run all invalid tests?"
-
-23. "Why are the line numbers in the invalid tests incorrect?"
-
-24. "What should I do next after all valid and invalid tests pass?"
-
-25. "Read the PDF carefully again and check everything that is required for this practice."
-
-I reviewed the suggested code and explanations, ran the commands myself, tested the compiler in my Ubuntu environment, checked the generated results and error messages, and fixed the problems found during testing.
+During the work, I ran all commands and tests locally and sent the outputs back to AI. We checked the results step by step and fixed or updated the implementation and tests when needed.
