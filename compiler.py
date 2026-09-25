@@ -8,6 +8,11 @@ import llvmlite.binding as llvm
 I32 = ir.IntType(32)
 I8 = ir.IntType(8)
 
+I32_MIN = -(2 ** 31)
+I32_MAX = 2 ** 31 - 1
+I64_MIN = -(2 ** 63)
+I64_MAX = 2 ** 63 - 1
+
 
 class CompileError(Exception):
     pass
@@ -45,6 +50,7 @@ class AssignNode(StmtNode):
         self.value = value
         self.line = line
         self.column = column
+        self.decl = None
 
     def accept(self, visitor):
         return visitor.visit_assign(self)
@@ -61,11 +67,13 @@ class ExitNode:
 
 
 class ExprNode:
-    pass
+    def __init__(self):
+        self.type = None
 
 
 class BinOpNode(ExprNode):
     def __init__(self, op, left, right, line, column):
+        super().__init__()
         self.op = op
         self.left = left
         self.right = right
@@ -78,9 +86,11 @@ class BinOpNode(ExprNode):
 
 class VarNode(ExprNode):
     def __init__(self, name, line, column):
+        super().__init__()
         self.name = name
         self.line = line
         self.column = column
+        self.decl = None
 
     def accept(self, visitor):
         return visitor.visit_var(self)
@@ -88,6 +98,7 @@ class VarNode(ExprNode):
 
 class ConstNode(ExprNode):
     def __init__(self, value, line, column):
+        super().__init__()
         self.value = value
         self.line = line
         self.column = column
@@ -98,6 +109,7 @@ class ConstNode(ExprNode):
 
 class BoolNode(ExprNode):
     def __init__(self, value, line, column):
+        super().__init__()
         self.value = value
         self.line = line
         self.column = column
@@ -719,6 +731,198 @@ class Parser:
         )
 
 
+class SemanticChecker:
+    def __init__(self):
+        self.symbols = {}
+
+    def visit_program(self, node):
+        for statement in node.statements:
+            statement.accept(self)
+
+        node.exit.accept(self)
+
+    def visit_decl(self, node):
+        if node.name in self.symbols:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is already declared"
+            )
+
+        node.init.accept(self)
+
+        if isinstance(node.init, ConstNode):
+            self.check_constant_for_target(
+                node.init,
+                node.type_name
+            )
+
+        self.check_assignable(
+            node.init,
+            node.type_name,
+            node.line,
+            node.column,
+            f"initialise '{node.name}'"
+        )
+
+        self.symbols[node.name] = node
+
+    def visit_assign(self, node):
+        if node.name not in self.symbols:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is "
+                "used before its declaration"
+            )
+
+        declaration = self.symbols[node.name]
+        node.decl = declaration
+
+        if not declaration.mutable:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"cannot assign to '{node.name}': "
+                "it is not mut"
+            )
+
+        node.value.accept(self)
+
+        if isinstance(node.value, ConstNode):
+            self.check_constant_for_target(
+                node.value,
+                declaration.type_name
+            )
+
+        self.check_assignable(
+            node.value,
+            declaration.type_name,
+            node.line,
+            node.column,
+            f"assign to '{node.name}'"
+        )
+
+    def visit_exit(self, node):
+        node.value.accept(self)
+
+        if node.value.type not in ("i32", "i64", "bool"):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                "invalid exit value"
+            )
+
+    def visit_binop(self, node):
+        left_type = node.left.accept(self)
+        right_type = node.right.accept(self)
+
+        if node.op in ("+", "-", "*"):
+            if left_type == "bool":
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot apply '{node.op}' to bool"
+                )
+
+            if right_type == "bool":
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot apply '{node.op}' to bool"
+                )
+
+            if left_type == "i64" or right_type == "i64":
+                node.type = "i64"
+            else:
+                node.type = "i32"
+
+            return node.type
+
+        if node.op in ("==", "!="):
+            left_integer = left_type in ("i32", "i64")
+            right_integer = right_type in ("i32", "i64")
+
+            if left_integer and right_integer:
+                node.type = "bool"
+                return node.type
+
+            if left_type == "bool" and right_type == "bool":
+                node.type = "bool"
+                return node.type
+
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"cannot compare {left_type} with {right_type}"
+            )
+
+        raise CompileError(
+            f"line {node.line}:{node.column}: "
+            f"unknown operator '{node.op}'"
+        )
+
+    def visit_var(self, node):
+        if node.name not in self.symbols:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is "
+                "used before its declaration"
+            )
+
+        declaration = self.symbols[node.name]
+        node.decl = declaration
+        node.type = declaration.type_name
+
+        return node.type
+
+    def visit_const(self, node):
+        if node.value <= I32_MAX:
+            node.type = "i32"
+            return node.type
+
+        if node.value <= I64_MAX:
+            node.type = "i64"
+            return node.type
+
+        raise CompileError(
+            f"line {node.line}:{node.column}: "
+            f"constant {node.value} does not fit in i64"
+        )
+
+    def visit_bool(self, node):
+        node.type = "bool"
+        return node.type
+
+    def check_constant_for_target(self, node, target_type):
+        if target_type == "i32" and node.value > I32_MAX:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"constant {node.value} does not fit in i32"
+            )
+
+        if target_type == "i64" and node.value > I64_MAX:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"constant {node.value} does not fit in i64"
+            )
+
+    def check_assignable(
+        self,
+        expr,
+        want,
+        line,
+        column,
+        what
+    ):
+        have = expr.type
+
+        if have == want:
+            return
+
+        if have == "i32" and want == "i64":
+            return
+
+        raise CompileError(
+            f"line {line}:{column}: "
+            f"cannot {what} of type {want} "
+            f"with a value of type {have}"
+        )
+
+
 class CodeGen:
     def __init__(self):
         self.module = ir.Module(name="practice4")
@@ -769,8 +973,7 @@ class CodeGen:
             bytearray(message)
         )
 
-        self.symbols = {}
-        self.mutable = set()
+        self.values = {}
 
     def visit_program(self, node):
         for statement in node.statements:
@@ -781,12 +984,6 @@ class CodeGen:
         return str(self.module)
 
     def visit_decl(self, node):
-        if node.name in self.symbols:
-            raise CompileError(
-                f"line {node.line}:{node.column}: "
-                f"variable '{node.name}' is already declared"
-            )
-
         value = node.init.accept(self)
 
         pointer = self.builder.alloca(
@@ -799,31 +996,14 @@ class CodeGen:
             pointer
         )
 
-        self.symbols[node.name] = pointer
-
-        if node.mutable:
-            self.mutable.add(node.name)
+        self.values[node.name] = pointer
 
     def visit_assign(self, node):
-        if node.name not in self.symbols:
-            raise CompileError(
-                f"line {node.line}:{node.column}: "
-                f"variable '{node.name}' is "
-                "used before its declaration"
-            )
-
-        if node.name not in self.mutable:
-            raise CompileError(
-                f"line {node.line}:{node.column}: "
-                f"cannot assign to '{node.name}': "
-                "it is not mut"
-            )
-
         value = node.value.accept(self)
 
         self.builder.store(
             value,
-            self.symbols[node.name]
+            self.values[node.name]
         )
 
     def visit_exit(self, node):
@@ -876,15 +1056,8 @@ class CodeGen:
         )
 
     def visit_var(self, node):
-        if node.name not in self.symbols:
-            raise CompileError(
-                f"line {node.line}:{node.column}: "
-                f"variable '{node.name}' is "
-                "used before its declaration"
-            )
-
         return self.builder.load(
-            self.symbols[node.name],
+            self.values[node.name],
             name=f"load_{node.name}"
         )
 
@@ -984,8 +1157,16 @@ def parse_program(data):
     return parser.parse_program()
 
 
+def check_program(program):
+    checker = SemanticChecker()
+    program.accept(checker)
+
+
 def compile_program(data):
     program = parse_program(data)
+
+    check_program(program)
+
     codegen = CodeGen()
     return program.accept(codegen)
 
