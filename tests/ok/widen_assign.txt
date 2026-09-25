@@ -1,0 +1,4 @@
+i64 mut x{0}
+i32 y{42}
+x := y
+exit x
