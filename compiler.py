@@ -27,8 +27,9 @@ class StmtNode:
 
 
 class DeclNode(StmtNode):
-    def __init__(self, name, mutable, init, line, column):
+    def __init__(self, name, type_name, mutable, init, line, column):
         self.name = name
+        self.type_name = type_name
         self.mutable = mutable
         self.init = init
         self.line = line
@@ -95,6 +96,16 @@ class ConstNode(ExprNode):
         return visitor.visit_const(self)
 
 
+class BoolNode(ExprNode):
+    def __init__(self, value, line, column):
+        self.value = value
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_bool(self)
+
+
 class Token:
     def __init__(self, kind, text, line, column):
         self.kind = kind
@@ -111,8 +122,12 @@ class Token:
 
 KEYWORDS = {
     "i32": "keyword",
+    "i64": "keyword",
+    "bool": "keyword",
     "mut": "keyword",
     "exit": "keyword",
+    "true": "keyword",
+    "false": "keyword",
 }
 
 
@@ -218,6 +233,14 @@ def lex(data: bytes):
                 state = "COLON"
                 start_col = col
 
+            elif b == ord("="):
+                state = "EQUAL"
+                start_col = col
+
+            elif b == ord("!"):
+                state = "BANG"
+                start_col = col
+
             else:
                 if b > 127:
                     char = f"0x{b:02x}"
@@ -298,6 +321,46 @@ def lex(data: bytes):
                 raise CompileError(
                     f"line {line}:{start_col}: "
                     "':' must be followed by '='"
+                )
+
+        elif state == "EQUAL":
+            if b == ord("="):
+                tokens.append(
+                    Token(
+                        "operator",
+                        "==",
+                        line,
+                        start_col
+                    )
+                )
+
+                state = "START"
+
+            else:
+                raise CompileError(
+                    f"line {line}:{start_col}: "
+                    "expected '==' "
+                    "(a single '=' is not an operator)"
+                )
+
+        elif state == "BANG":
+            if b == ord("="):
+                tokens.append(
+                    Token(
+                        "operator",
+                        "!=",
+                        line,
+                        start_col
+                    )
+                )
+
+                state = "START"
+
+            else:
+                raise CompileError(
+                    f"line {line}:{start_col}: "
+                    "expected '!=' "
+                    "(a single '!' is not an operator)"
                 )
 
         i += 1
@@ -385,7 +448,7 @@ class Parser:
             raise CompileError(
                 f"line {self.tokens[-1].line}:"
                 f"{self.end_column()}: "
-                "expected number or variable"
+                "expected constant or variable"
             )
 
         if token.kind == "number":
@@ -393,6 +456,15 @@ class Parser:
 
             return ConstNode(
                 int(token.text),
+                token.line,
+                token.column
+            )
+
+        if token.text in ("true", "false"):
+            self.eat()
+
+            return BoolNode(
+                token.text == "true",
                 token.line,
                 token.column
             )
@@ -408,7 +480,7 @@ class Parser:
 
         error_at(
             token,
-            "expected a number or variable"
+            "expected a constant or variable"
         )
 
     def parse_term(self):
@@ -431,7 +503,7 @@ class Parser:
 
         return left
 
-    def parse_expr(self):
+    def parse_arith(self):
         left = self.parse_term()
 
         while (
@@ -451,8 +523,44 @@ class Parser:
 
         return left
 
+    def parse_expr(self):
+        left = self.parse_arith()
+
+        if (
+            self.peek() is not None
+            and self.peek().text in ("==", "!=")
+        ):
+            operator = self.eat()
+            right = self.parse_arith()
+
+            left = BinOpNode(
+                operator.text,
+                left,
+                right,
+                operator.line,
+                operator.column
+            )
+
+        return left
+
     def parse_decl(self):
-        start = self.eat(text="i32")
+        type_token = self.peek()
+
+        if (
+            type_token is None
+            or type_token.text not in ("i32", "i64", "bool")
+        ):
+            if type_token is None:
+                raise CompileError(
+                    "unexpected end of line"
+                )
+
+            error_at(
+                type_token,
+                "expected type"
+            )
+
+        self.eat()
 
         mutable = False
         token = self.peek()
@@ -465,7 +573,7 @@ class Parser:
 
         if name_token is None:
             raise CompileError(
-                f"line {start.line}:{self.end_column()}: "
+                f"line {type_token.line}:{self.end_column()}: "
                 "expected variable name"
             )
 
@@ -496,7 +604,7 @@ class Parser:
 
         if token is None:
             raise CompileError(
-                f"line {start.line}:"
+                f"line {type_token.line}:"
                 f"{self.end_column()}: expected '}}'"
             )
 
@@ -504,6 +612,7 @@ class Parser:
 
         return DeclNode(
             name_token.text,
+            type_token.text,
             mutable,
             value,
             name_token.line,
@@ -552,7 +661,7 @@ class Parser:
     def parse_statement(self):
         token = self.peek()
 
-        if token.text == "i32":
+        if token.text in ("i32", "i64", "bool"):
             return self.parse_decl()
 
         if token.kind == "identifier":
@@ -612,7 +721,7 @@ class Parser:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice3")
+        self.module = ir.Module(name="practice4")
         self.module.triple = llvm.get_default_triple()
 
         main_type = ir.FunctionType(I32, [])
@@ -762,7 +871,8 @@ class CodeGen:
 
         raise CompileError(
             f"line {node.line}:{node.column}: "
-            f"unknown operator '{node.op}'"
+            f"operator '{node.op}' is not "
+            "implemented in code generation yet"
         )
 
     def visit_var(self, node):
@@ -782,6 +892,12 @@ class CodeGen:
         return ir.Constant(
             I32,
             node.value
+        )
+
+    def visit_bool(self, node):
+        return ir.Constant(
+            I32,
+            1 if node.value else 0
         )
 
 
@@ -806,8 +922,9 @@ class AstPrinter:
 
     def visit_decl(self, node):
         kind = "mut" if node.mutable else "const"
+
         self.write(
-            f"Decl {node.name} {kind}"
+            f"Decl {node.name} {node.type_name} {kind}"
         )
 
         self.indent += 2
@@ -848,6 +965,11 @@ class AstPrinter:
     def visit_const(self, node):
         self.write(
             f"Const {node.value}"
+        )
+
+    def visit_bool(self, node):
+        self.write(
+            f"Bool {'true' if node.value else 'false'}"
         )
 
 
