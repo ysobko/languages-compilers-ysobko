@@ -5,12 +5,12 @@ from llvmlite import ir
 import llvmlite.binding as llvm
 
 
-I32 = ir.IntType(32)
+I1 = ir.IntType(1)
 I8 = ir.IntType(8)
+I32 = ir.IntType(32)
+I64 = ir.IntType(64)
 
-I32_MIN = -(2 ** 31)
 I32_MAX = 2 ** 31 - 1
-I64_MIN = -(2 ** 63)
 I64_MAX = 2 ** 63 - 1
 
 
@@ -39,6 +39,7 @@ class DeclNode(StmtNode):
         self.init = init
         self.line = line
         self.column = column
+        self.ir_ptr = None
 
     def accept(self, visitor):
         return visitor.visit_decl(self)
@@ -775,7 +776,6 @@ class SemanticChecker:
             )
 
         declaration = self.symbols[node.name]
-        node.decl = declaration
 
         if not declaration.mutable:
             raise CompileError(
@@ -784,6 +784,7 @@ class SemanticChecker:
                 "it is not mut"
             )
 
+        node.decl = declaration
         node.value.accept(self)
 
         if isinstance(node.value, ConstNode):
@@ -954,26 +955,87 @@ class CodeGen:
             name="printf"
         )
 
-        message = b"Program exit with result %d\n\0"
-        message_type = ir.ArrayType(
-            I8,
-            len(message)
+        self.int_fmt = self.make_string(
+            "int_fmt",
+            b"Program exit with result %lld\n\0"
         )
 
-        self.fmt = ir.GlobalVariable(
+        self.bool_fmt = self.make_string(
+            "bool_fmt",
+            b"Program exit with result %s\n\0"
+        )
+
+        self.true_string = self.make_string(
+            "true_string",
+            b"true\0"
+        )
+
+        self.false_string = self.make_string(
+            "false_string",
+            b"false\0"
+        )
+
+    def make_string(self, name, data):
+        string_type = ir.ArrayType(I8, len(data))
+
+        global_string = ir.GlobalVariable(
             self.module,
-            message_type,
-            name="fmt"
+            string_type,
+            name=name
         )
 
-        self.fmt.linkage = "private"
-        self.fmt.global_constant = True
-        self.fmt.initializer = ir.Constant(
-            message_type,
-            bytearray(message)
+        global_string.linkage = "private"
+        global_string.global_constant = True
+        global_string.initializer = ir.Constant(
+            string_type,
+            bytearray(data)
         )
 
-        self.values = {}
+        return global_string
+
+    def llvm_type(self, type_name):
+        if type_name == "i32":
+            return I32
+
+        if type_name == "i64":
+            return I64
+
+        if type_name == "bool":
+            return I1
+
+        raise RuntimeError(
+            f"unknown type {type_name}"
+        )
+
+    def string_pointer(self, global_string):
+        zero = ir.Constant(I32, 0)
+
+        return self.builder.gep(
+            global_string,
+            [zero, zero],
+            inbounds=True
+        )
+
+    def coerce(self, value, have, want):
+        if have == want:
+            return value
+
+        if have == "i32" and want == "i64":
+            return self.builder.sext(
+                value,
+                I64,
+                name="sexttmp"
+            )
+
+        raise RuntimeError(
+            f"cannot coerce {have} to {want}"
+        )
+
+    def wider_integer_type(self, left_type, right_type):
+        if left_type == "i64" or right_type == "i64":
+            return "i64"
+
+        return "i32"
 
     def visit_program(self, node):
         for statement in node.statements:
@@ -986,8 +1048,14 @@ class CodeGen:
     def visit_decl(self, node):
         value = node.init.accept(self)
 
+        value = self.coerce(
+            value,
+            node.init.type,
+            node.type_name
+        )
+
         pointer = self.builder.alloca(
-            I32,
+            self.llvm_type(node.type_name),
             name=node.name
         )
 
@@ -996,80 +1064,155 @@ class CodeGen:
             pointer
         )
 
-        self.values[node.name] = pointer
+        node.ir_ptr = pointer
 
     def visit_assign(self, node):
         value = node.value.accept(self)
 
+        value = self.coerce(
+            value,
+            node.value.type,
+            node.decl.type_name
+        )
+
         self.builder.store(
             value,
-            self.values[node.name]
+            node.decl.ir_ptr
         )
 
     def visit_exit(self, node):
         value = node.value.accept(self)
+        value_type = node.value.type
 
-        zero = ir.Constant(I32, 0)
+        if value_type in ("i32", "i64"):
+            value = self.coerce(
+                value,
+                value_type,
+                "i64"
+            )
 
-        fmt_pointer = self.builder.gep(
-            self.fmt,
-            [zero, zero],
-            inbounds=True
+            self.builder.call(
+                self.printf,
+                [
+                    self.string_pointer(self.int_fmt),
+                    value
+                ]
+            )
+
+        else:
+            text = self.builder.select(
+                value,
+                self.string_pointer(self.true_string),
+                self.string_pointer(self.false_string),
+                name="bool_text"
+            )
+
+            self.builder.call(
+                self.printf,
+                [
+                    self.string_pointer(self.bool_fmt),
+                    text
+                ]
+            )
+
+        self.builder.ret(
+            ir.Constant(I32, 0)
         )
-
-        self.builder.call(
-            self.printf,
-            [fmt_pointer, value]
-        )
-
-        self.builder.ret(value)
 
     def visit_binop(self, node):
         left = node.left.accept(self)
         right = node.right.accept(self)
 
-        if node.op == "+":
-            return self.builder.add(
+        left_type = node.left.type
+        right_type = node.right.type
+
+        if node.op in ("+", "-", "*"):
+            result_type = node.type
+
+            left = self.coerce(
                 left,
-                right,
-                name="addtmp"
+                left_type,
+                result_type
             )
 
-        if node.op == "-":
-            return self.builder.sub(
-                left,
+            right = self.coerce(
                 right,
-                name="subtmp"
+                right_type,
+                result_type
             )
 
-        if node.op == "*":
+            if node.op == "+":
+                return self.builder.add(
+                    left,
+                    right,
+                    name="addtmp"
+                )
+
+            if node.op == "-":
+                return self.builder.sub(
+                    left,
+                    right,
+                    name="subtmp"
+                )
+
             return self.builder.mul(
                 left,
                 right,
                 name="multmp"
             )
 
-        raise CompileError(
-            f"line {node.line}:{node.column}: "
-            f"operator '{node.op}' is not "
-            "implemented in code generation yet"
+        if node.op in ("==", "!="):
+            if (
+                left_type in ("i32", "i64")
+                and right_type in ("i32", "i64")
+            ):
+                compare_type = self.wider_integer_type(
+                    left_type,
+                    right_type
+                )
+
+                left = self.coerce(
+                    left,
+                    left_type,
+                    compare_type
+                )
+
+                right = self.coerce(
+                    right,
+                    right_type,
+                    compare_type
+                )
+
+            predicate = (
+                "==" if node.op == "==" else "!="
+            )
+
+            return self.builder.icmp_signed(
+                predicate,
+                left,
+                right,
+                name="cmptmp"
+            )
+
+        raise RuntimeError(
+            f"unknown operator {node.op}"
         )
 
     def visit_var(self, node):
         return self.builder.load(
-            self.values[node.name],
+            node.decl.ir_ptr,
             name=f"load_{node.name}"
         )
 
     def visit_const(self, node):
         return ir.Constant(
-            I32,
+            self.llvm_type(node.type),
             node.value
         )
 
     def visit_bool(self, node):
         return ir.Constant(
-            I32,
+            I1,
             1 if node.value else 0
         )
 

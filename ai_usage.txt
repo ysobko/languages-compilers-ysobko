@@ -1,41 +1,60 @@
-AI Usage Log — Practice 3
+Practice 4 — Types, Comparisons and Semantic Pass
 
-I used AI throughout Practice 3 to help me understand and implement the tasks step by step.
+Tool: ChatGPT (OpenAI)
 
-AI helped me with:
-- Reading the Practice 3 requirements and explaining what I needed to do for each task.
-- Writing and checking the EBNF grammar for Task 1.
-- Understanding how the parser and AST should work.
-- Implementing the AST classes and the hand-written recursive-descent parser for Task 2.
-- Implementing and checking the --ast output.
-- Testing parser errors and checking their line:column positions.
-- Refactoring the compiler for Task 3 so code generation walks the AST instead of working directly with tokens.
-- Implementing and testing semantic checks such as using a variable before declaration, duplicate declarations, and assigning to a const variable.
-- Implementing Task 4 expressions with +, - and *.
-- Implementing precedence so * binds tighter than + and -.
-- Implementing left associativity for operators of the same precedence.
-- Updating grammar.ebnf for expr, term and factor.
-- Creating and checking the required valid and invalid tests for Task 4.
-- Comparing the tests with the assignment requirements and changing them when some required cases were missing.
-- Testing 2 + 3 * 4 and checking that the result was 14 and the AST had the correct structure.
-- Testing 20 - 5 - 3 and checking that it was parsed left-associatively and produced 12.
-- Checking that the Practice 2 program still worked and produced 70.
-- Creating and testing the required Task 4 example and checking through lli that it produced 120.
-- Reviewing the final submission requirements and checking that all required parts were completed.
+How I used AI:
+I used ChatGPT throughout Practice 4 as a coding assistant and for explanations of the new compiler concepts. ChatGPT was used both to explain the requirements and to generate code and test examples that I integrated into my existing compiler.
 
-Main prompts I used:
-- Help me do Practice 3 step by step.
-- Help me write the grammar for Task 1.
-- Help me implement the parser and AST.
-- Give me the implementation of compiler.py without comments.
-- Help me test the AST and parser errors.
-- Help me implement Task 3 code generation from the AST.
-- Explain what we did in Task 2 and Task 3.
-- Help me implement Task 4.
-- Help me test precedence and left associativity.
-- Help me create the required valid and invalid tests.
-- Check if my tests cover the exact requirements.
-- Carefully review all assignment requirements and compare them with what we implemented.
-- Check if everything from the Submission section is completed.
+Prompts / help requested:
+- I asked ChatGPT to explain the Practice 4 requirements and the purpose of adding types and a separate semantic pass.
+- I asked how to extend the lexer with i64, bool, true, false, == and !=, including lexical errors for a single = and !.
+- I asked how to update the parser and AST for declaration types, boolean literals and comparison expressions.
+- I asked for an explanation of operator precedence, especially why arithmetic is evaluated before == and != and why only one comparison is allowed in an expression.
+- I asked how to implement a separate SemanticChecker that runs before LLVM code generation.
+- I asked how the semantic symbol table should work and how node.type and node.decl should be stored and later used by CodeGen.
+- I asked for help implementing the type rules for i32, i64 and bool, including integer arithmetic, boolean and integer comparisons, assignment and initialisation rules, and constant range checking.
+- I asked for an explanation of widening from i32 to i64 and why i64 to i32 narrowing must be rejected.
+- I asked for help implementing LLVM code generation for i32, i64 and bool.
+- I asked how sext should be used for i32 to i64 conversions, how icmp should be used for == and !=, and how select can be used to print true or false.
+- I asked for help understanding generated LLVM IR and specifically checked that sext happens before an add with mixed i32 and i64 operands.
+- I asked ChatGPT to suggest positive and negative Practice 4 tests and to improve the test coverage beyond the minimum required tests.
+- I asked ChatGPT to compare the implementation and tests with the Practice 4 PDF and identify any requirements that were still missing.
+- I asked for help checking all syntax listed as “Not in the language”.
+- I asked for help updating grammar.ebnf to the Practice 4 grammar.
+- I asked for explanations of errors found while editing the compiler, including an indentation TabError.
 
-During the work, I ran all commands and tests locally and sent the outputs back to AI. We checked the results step by step and fixed or updated the implementation and tests when needed.
+What I took from the AI:
+- ChatGPT provided code examples and implementation suggestions for the lexer, parser, AST, SemanticChecker and CodeGen changes required for Practice 4.
+- I used AI-generated code for parts of the Practice 4 implementation, including support for i64 and bool, boolean literals, comparison expressions, semantic type checking and LLVM code generation.
+- ChatGPT provided a complete suggested version of compiler.py combining the Practice 4 frontend, semantic checker and code generator. I used this as the basis for my Practice 4 implementation and tested it in my repository.
+- I used the suggested SemanticChecker structure with its own symbol table and with expression types stored in node.type and resolved declarations stored in node.decl.
+- I used the suggested type-checking approach for integer arithmetic, comparisons, assignments, initialisers and constants.
+- I used the suggested coerce helper for converting i32 values to i64 with LLVM sext.
+- I used the suggested approach for generating == and != with LLVM icmp.
+- I used the suggested approach for printing boolean exit values using LLVM select between true and false strings.
+- ChatGPT provided suggested Practice 4 test programs and expected results for tests/ok and tests/err.
+- I used ChatGPT’s suggestion to extend the existing test runner so that it runs the new tests/ok and tests/err directories while preserving the previous Practice 2 and Practice 3 tests.
+- ChatGPT provided the updated Practice 4 grammar for grammar.ebnf.
+
+What I changed / verified myself:
+- I integrated the suggested changes into my existing compiler and repository rather than creating a separate project.
+- I ran the compiler after the implementation stages and checked the actual results in the terminal.
+- I tested the Task 1 example from the practice and verified that it prints Program exit with result 385.
+- I tested boolean comparison and boolean exit and verified that a boolean program prints Program exit with result true.
+- I manually tested semantic errors including bool arithmetic, bool/integer comparison, i64 to i32 narrowing during initialisation and assignment, i32 and i64 constant overflow, use before declaration, duplicate declaration and assignment to a non-mut variable.
+- I checked that semantic errors contain the correct line and column information.
+- I tested valid i32 to i64 widening in initialisation, assignment, arithmetic and mixed-width comparisons.
+- I inspected the generated LLVM IR and verified that a mixed-width arithmetic expression loads the i32 and i64 values, performs sext from i32 to i64, and then performs add i64.
+- I verified the generated LLVM IR for comparison and boolean output operations, including icmp and select.
+- I updated the old Practice 3 AST snapshots after checking that the declaration lines now contain their types.
+- I added tests/ok and tests/err and added more than the minimum six programs in each category to improve coverage.
+- I added additional tests for widening during assignment, mixed-width !=, bool == bool, complex arithmetic, i32 constant overflow, reverse integer/bool comparison and bool multiplication.
+- I tested syntax that is explicitly not part of the language: parentheses, /, <, >, a single =, a single !, a sign before a constant, two comparisons in one expression, two statements on one line, a declaration without an initialiser and statements after exit. I verified that all of them are rejected with a non-zero exit code.
+- I updated grammar.ebnf from the Practice 3 grammar to the Practice 4 grammar with type, i64, bool, true, false, == and !=.
+- I checked SemanticChecker.visit_assign against the practice requirements and moved node.decl assignment to after the mutability check.
+- After this change I found and fixed a TabError caused by inconsistent indentation.
+- I reran Python syntax checking and the complete test suite after the final changes.
+- The final test suite contains 30 program tests and reports 0 failures.
+
+Outcome:
+ChatGPT was used for explanations, code generation, debugging guidance and test design during Practice 4. I used AI-generated implementation as a basis for parts of the compiler, but I integrated the changes into my existing project and verified the behaviour myself by compiling and running programs, checking semantic error messages and positions, inspecting generated LLVM IR, testing invalid language constructs and repeatedly running the full regression test suite.

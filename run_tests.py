@@ -6,6 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 TESTS = ROOT / "tests"
+OK_TESTS = TESTS / "ok"
+ERR_TESTS = TESTS / "err"
 COMPILER = ROOT / "compiler.py"
 
 
@@ -105,34 +107,46 @@ def main():
     valid_tests = sorted(TESTS.glob("valid*.txt"))
     invalid_tests = sorted(TESTS.glob("invalid*.txt"))
 
+    if OK_TESTS.exists():
+        valid_tests += sorted(OK_TESTS.glob("*.txt"))
+
+    if ERR_TESTS.exists():
+        invalid_tests += sorted(ERR_TESTS.glob("*.txt"))
+
     for source in valid_tests:
         ok, message = run_valid(source)
 
         if ok:
-            print(f"PASS {source.name}")
+            print(f"PASS {source.relative_to(TESTS)}")
         else:
             failures += 1
-            print(f"FAIL {source.name}")
+            print(f"FAIL {source.relative_to(TESTS)}")
             print(message)
 
         ast_ok, ast_message = run_ast(source)
 
         if source.with_suffix(".ast").exists():
             if ast_ok:
-                print(f"PASS {source.stem}.ast")
+                print(
+                    f"PASS "
+                    f"{source.with_suffix('.ast').relative_to(TESTS)}"
+                )
             else:
                 failures += 1
-                print(f"FAIL {source.stem}.ast")
+                print(
+                    f"FAIL "
+                    f"{source.with_suffix('.ast').relative_to(TESTS)}"
+                )
                 print(ast_message)
 
     for source in invalid_tests:
         ok, message = run_invalid(source)
 
         if ok:
-            print(f"PASS {source.name}")
+            print(f"PASS {source.relative_to(TESTS)}")
         else:
             failures += 1
-            print(f"FAIL {source.name}")
+            print(f"FAIL {source.relative_to(TESTS)}")
             print(message)
 
     total = len(valid_tests) + len(invalid_tests)

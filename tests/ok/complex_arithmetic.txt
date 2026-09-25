@@ -1,0 +1,5 @@
+i32 x{2}
+i64 y{3000000000}
+i32 z{3}
+i64 result{x + y * z}
+exit result
