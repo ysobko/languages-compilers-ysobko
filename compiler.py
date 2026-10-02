@@ -57,6 +57,36 @@ class AssignNode(StmtNode):
         return visitor.visit_assign(self)
 
 
+class IfNode(StmtNode):
+    def __init__(
+        self,
+        condition,
+        then_block,
+        else_block,
+        line,
+        column
+    ):
+        self.condition = condition
+        self.then_block = then_block
+        self.else_block = else_block
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_if(self)
+
+
+class BlockNode:
+    def __init__(self, statements, exit_node, line, column):
+        self.statements = statements
+        self.exit = exit_node
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_block(self)
+
+
 class ExitNode:
     def __init__(self, value, line, column):
         self.value = value
@@ -119,6 +149,17 @@ class BoolNode(ExprNode):
         return visitor.visit_bool(self)
 
 
+class NotNode(ExprNode):
+    def __init__(self, value, line, column):
+        super().__init__()
+        self.value = value
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_not(self)
+
+
 class Token:
     def __init__(self, kind, text, line, column):
         self.kind = kind
@@ -141,6 +182,8 @@ KEYWORDS = {
     "exit": "keyword",
     "true": "keyword",
     "false": "keyword",
+    "if": "keyword",
+    "else": "keyword",
 }
 
 
@@ -168,30 +211,17 @@ def lex(data: bytes):
     col = 1
     i = 0
 
-    brace_columns = []
-
     while i <= len(data):
         b = data[i] if i < len(data) else None
 
         if state == "START":
             if b is None:
-                if brace_columns:
-                    raise CompileError(
-                        f"line {line}:{brace_columns[0]}: "
-                        "'{' is not closed before the end of the line"
-                    )
                 break
 
             if b in (32, 9):
                 pass
 
             elif b == 10:
-                if brace_columns:
-                    raise CompileError(
-                        f"line {line}:{brace_columns[0]}: "
-                        "'{' is not closed before the end of the line"
-                    )
-
                 tokens.append(
                     Token("endline", "\n", line, col)
                 )
@@ -201,7 +231,6 @@ def lex(data: bytes):
 
                 line += 1
                 col = 0
-                brace_columns = []
 
             elif is_alpha(b):
                 state = "IDENT"
@@ -214,15 +243,11 @@ def lex(data: bytes):
                 start_col = col
 
             elif b == ord("{"):
-                brace_columns.append(col)
                 tokens.append(
                     Token("block", "{", line, col)
                 )
 
             elif b == ord("}"):
-                if brace_columns:
-                    brace_columns.pop()
-
                 tokens.append(
                     Token("block", "}", line, col)
                 )
@@ -370,11 +395,17 @@ def lex(data: bytes):
                 state = "START"
 
             else:
-                raise CompileError(
-                    f"line {line}:{start_col}: "
-                    "expected '!=' "
-                    "(a single '!' is not an operator)"
+                tokens.append(
+                    Token(
+                        "operator",
+                        "!",
+                        line,
+                        start_col
+                    )
                 )
+
+                state = "START"
+                continue
 
         i += 1
         col += 1
@@ -407,6 +438,7 @@ def error_at(token, message):
 class Parser:
     def __init__(self, token_lines):
         self.token_lines = token_lines
+        self.line_position = 0
         self.tokens = []
         self.position = 0
 
@@ -417,6 +449,36 @@ class Parser:
             if token.kind != "endline"
         ]
         self.position = 0
+
+    def peek_line(self):
+        position = self.line_position
+
+        while position < len(self.token_lines):
+            tokens = [
+                token
+                for token in self.token_lines[position]
+                if token.kind != "endline"
+            ]
+
+            if tokens:
+                return tokens
+
+            position += 1
+
+        return None
+
+    def next_line(self):
+        while self.line_position < len(self.token_lines):
+            raw_tokens = self.token_lines[self.line_position]
+            self.line_position += 1
+            self.set_line(raw_tokens)
+
+            if self.tokens:
+                return True
+
+        self.tokens = []
+        self.position = 0
+        return False
 
     def peek(self):
         if self.position >= len(self.tokens):
@@ -458,10 +520,25 @@ class Parser:
         token = self.peek()
 
         if token is None:
+            if self.tokens:
+                raise CompileError(
+                    f"line {self.tokens[-1].line}:"
+                    f"{self.end_column()}: "
+                    "expected constant or variable"
+                )
+
             raise CompileError(
-                f"line {self.tokens[-1].line}:"
-                f"{self.end_column()}: "
-                "expected constant or variable"
+                "line 1:1: expected constant or variable"
+            )
+
+        if token.text == "!":
+            operator = self.eat(text="!")
+            value = self.parse_factor()
+
+            return NotNode(
+                value,
+                operator.line,
+                operator.column
             )
 
         if token.kind == "number":
@@ -671,6 +748,124 @@ class Parser:
             start.column
         )
 
+    def parse_block(self):
+        if not self.next_line():
+            raise CompileError(
+                "line 1:1: expected '{' after 'if'"
+            )
+
+        token = self.peek()
+
+        if token.text != "{":
+            error_at(
+                token,
+                f"expected '{{' on its own line after 'if', "
+                f"got '{token.text}'"
+            )
+
+        block_start = self.eat(text="{")
+        self.ensure_end()
+
+        statements = []
+        exit_node = None
+
+        while True:
+            if not self.next_line():
+                raise CompileError(
+                    f"line {block_start.line}:"
+                    f"{block_start.column}: "
+                    "'{' is never closed"
+                )
+
+            first = self.peek()
+
+            if first.text == "}":
+                self.eat(text="}")
+                self.ensure_end()
+
+                if not statements and exit_node is None:
+                    raise CompileError(
+                        f"line {block_start.line}:"
+                        f"{block_start.column}: empty block"
+                    )
+
+                return BlockNode(
+                    statements,
+                    exit_node,
+                    block_start.line,
+                    block_start.column
+                )
+
+            if exit_node is not None:
+                error_at(
+                    first,
+                    "statement after 'exit' in the same block"
+                )
+
+            if first.text == "exit":
+                exit_node = self.parse_exit()
+                self.ensure_end()
+                continue
+
+            if first.text == "else":
+                error_at(
+                    first,
+                    "'else' without an 'if'"
+                )
+
+            statement = self.parse_statement()
+            self.ensure_end()
+            statements.append(statement)
+
+    def parse_if(self):
+        if_token = self.eat(text="if")
+
+        if self.peek() is None:
+            raise CompileError(
+                f"line {if_token.line}:"
+                f"{if_token.column + 2}: "
+                "expected condition after 'if'"
+            )
+
+        condition = self.parse_expr()
+
+        token = self.peek()
+
+        if token is not None:
+            if token.text == "{":
+                error_at(
+                    token,
+                    "unexpected '{' after the statement"
+                )
+
+            error_at(
+                token,
+                "extra tokens after statement"
+            )
+
+        then_block = self.parse_block()
+        else_block = None
+
+        next_tokens = self.peek_line()
+
+        if (
+            next_tokens is not None
+            and next_tokens[0].text == "else"
+        ):
+            self.next_line()
+            self.eat(text="else")
+            self.ensure_end()
+
+            else_block = self.parse_block()
+
+        return IfNode(
+            condition,
+            then_block,
+            else_block,
+            if_token.line,
+            if_token.column
+        )
+
     def parse_statement(self):
         token = self.peek()
 
@@ -679,6 +874,15 @@ class Parser:
 
         if token.kind == "identifier":
             return self.parse_assign()
+
+        if token.text == "if":
+            return self.parse_if()
+
+        if token.text == "else":
+            error_at(
+                token,
+                "'else' without an 'if'"
+            )
 
         error_at(
             token,
@@ -698,12 +902,7 @@ class Parser:
         statements = []
         exit_node = None
 
-        for raw_tokens in self.token_lines:
-            self.set_line(raw_tokens)
-
-            if not self.tokens:
-                continue
-
+        while self.next_line():
             first = self.peek()
 
             if exit_node is not None:
@@ -716,6 +915,12 @@ class Parser:
                 exit_node = self.parse_exit()
                 self.ensure_end()
                 continue
+
+            if first.text == "else":
+                error_at(
+                    first,
+                    "'else' without an 'if'"
+                )
 
             node = self.parse_statement()
             self.ensure_end()
@@ -1256,6 +1461,30 @@ class AstPrinter:
         node.value.accept(self)
         self.indent -= 2
 
+    def visit_if(self, node):
+        self.write("If")
+        self.indent += 2
+
+        node.condition.accept(self)
+        node.then_block.accept(self)
+
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+        self.indent -= 2
+
+    def visit_block(self, node):
+        self.write("Block")
+        self.indent += 2
+
+        for statement in node.statements:
+            statement.accept(self)
+
+        if node.exit is not None:
+            node.exit.accept(self)
+
+        self.indent -= 2
+
     def visit_exit(self, node):
         self.write("Exit")
 
@@ -1287,6 +1516,12 @@ class AstPrinter:
         self.write(
             f"Bool {'true' if node.value else 'false'}"
         )
+
+    def visit_not(self, node):
+        self.write("Not")
+        self.indent += 2
+        node.value.accept(self)
+        self.indent -= 2
 
 
 def print_ast(program):
