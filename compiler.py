@@ -255,10 +255,10 @@ def lex(data: bytes):
                 start_col = col
 
             else:
-                if b > 127:
-                    char = f"0x{b:02x}"
-                else:
+                if 32 <= b <= 126:
                     char = chr(b)
+                else:
+                    char = f"0x{b:02x}"
 
                 raise CompileError(
                     f"line {line}:{col}: "
