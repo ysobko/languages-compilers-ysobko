@@ -1,0 +1,12 @@
+bool a{true}
+bool b{false}
+bool mut result{false}
+if !a != b
+{
+result := false
+}
+else
+{
+result := !b
+}
+exit result

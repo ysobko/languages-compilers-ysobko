@@ -1,12 +1,12 @@
-cat > grammar.ebnf <<'EOF'
 program ::= { statement } exit
-statement ::= decl | assign
+statement ::= decl | assign | if
 decl ::= type [ "mut" ] ident "{" expr "}"
 type ::= "i32" | "i64" | "bool"
 assign ::= ident ":=" expr
+if ::= "if" expr NL block [ "else" NL block ]
+block ::= "{" NL { statement } [ exit NL ] "}" NL
 exit ::= "exit" factor
 expr ::= arith [ ("==" | "!=") arith ]
 arith ::= term { ("+" | "-") term }
 term ::= factor { "*" factor }
-factor ::= number | "true" | "false" | ident
-EOF
+factor ::= number | "true" | "false" | ident | "!" factor

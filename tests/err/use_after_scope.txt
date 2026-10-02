@@ -1,0 +1,5 @@
+if true
+{
+i32 hidden{77}
+}
+exit hidden

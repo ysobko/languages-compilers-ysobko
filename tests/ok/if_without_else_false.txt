@@ -1,0 +1,7 @@
+i32 mut value{17}
+bool condition{false}
+if condition
+{
+value := 99
+}
+exit value

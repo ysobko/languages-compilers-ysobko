@@ -1,0 +1,6 @@
+i32 count{10}
+if count
+{
+exit 1
+}
+exit 0
