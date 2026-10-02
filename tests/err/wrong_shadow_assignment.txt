@@ -1,0 +1,7 @@
+i32 mut value{10}
+if true
+{
+bool mut value{true}
+value := 20
+}
+exit value

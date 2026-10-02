@@ -1,0 +1,3 @@
+i32 number{42}
+bool result{!number}
+exit result

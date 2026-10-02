@@ -1,0 +1,8 @@
+i32 mut value{7}
+if true
+{
+i64 mut value{100}
+value := value + 50
+}
+value := value * 3
+exit value

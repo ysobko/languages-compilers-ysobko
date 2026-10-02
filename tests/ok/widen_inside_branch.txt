@@ -1,0 +1,12 @@
+i64 mut total{100}
+i32 small{25}
+bool use_small{true}
+if use_small
+{
+total := small
+}
+else
+{
+total := 999
+}
+exit total

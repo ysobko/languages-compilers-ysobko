@@ -695,7 +695,7 @@ class Parser:
         if token is None:
             raise CompileError(
                 f"line {type_token.line}:"
-                f"{self.end_column()}: expected '}}'"
+                f"{self.end_column()}: expected '}}', found end of line"
             )
 
         self.eat(text="}")
@@ -1182,7 +1182,7 @@ class SemanticChecker:
 
 class CodeGen:
     def __init__(self):
-        self.module = ir.Module(name="practice4")
+        self.module = ir.Module(name="practice5")
         self.module.triple = llvm.get_default_triple()
 
         main_type = ir.FunctionType(I32, [])
@@ -1287,19 +1287,121 @@ class CodeGen:
             f"cannot coerce {have} to {want}"
         )
 
-    def wider_integer_type(self, left_type, right_type):
-        if left_type == "i64" or right_type == "i64":
+    def wider_integer_type(
+        self,
+        left_type,
+        right_type
+    ):
+        if (
+            left_type == "i64"
+            or right_type == "i64"
+        ):
             return "i64"
 
         return "i32"
 
+    def allocate_declarations(self, node):
+        if isinstance(node, ProgramNode):
+            for statement in node.statements:
+                self.allocate_declarations(statement)
+
+            return
+
+        if isinstance(node, DeclNode):
+            node.ir_ptr = self.builder.alloca(
+                self.llvm_type(node.type_name),
+                name=node.name
+            )
+
+            return
+
+        if isinstance(node, IfNode):
+            self.allocate_declarations(
+                node.then_block
+            )
+
+            if node.else_block is not None:
+                self.allocate_declarations(
+                    node.else_block
+                )
+
+            return
+
+        if isinstance(node, BlockNode):
+            for statement in node.statements:
+                self.allocate_declarations(statement)
+
     def visit_program(self, node):
+        self.allocate_declarations(node)
+
         for statement in node.statements:
             statement.accept(self)
 
-        node.exit.accept(self)
+        if not self.builder.block.is_terminated:
+            node.exit.accept(self)
 
         return str(self.module)
+
+    def visit_block(self, node):
+        for statement in node.statements:
+            if self.builder.block.is_terminated:
+                break
+
+            statement.accept(self)
+
+        if (
+            node.exit is not None
+            and not self.builder.block.is_terminated
+        ):
+            node.exit.accept(self)
+
+    def visit_if(self, node):
+        condition = node.condition.accept(self)
+
+        then_bb = (
+            self.main_function
+            .append_basic_block("then")
+        )
+
+        if node.else_block is not None:
+            else_bb = (
+                self.main_function
+                .append_basic_block("else")
+            )
+        else:
+            else_bb = None
+
+        merge_bb = (
+            self.main_function
+            .append_basic_block("merge")
+        )
+
+        self.builder.cbranch(
+            condition,
+            then_bb,
+            (
+                else_bb
+                if else_bb is not None
+                else merge_bb
+            )
+        )
+
+        self.builder.position_at_end(then_bb)
+
+        node.then_block.accept(self)
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(merge_bb)
+
+        if else_bb is not None:
+            self.builder.position_at_end(else_bb)
+
+            node.else_block.accept(self)
+
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
 
     def visit_decl(self, node):
         value = node.init.accept(self)
@@ -1310,17 +1412,10 @@ class CodeGen:
             node.type_name
         )
 
-        pointer = self.builder.alloca(
-            self.llvm_type(node.type_name),
-            name=node.name
-        )
-
         self.builder.store(
             value,
-            pointer
+            node.ir_ptr
         )
-
-        node.ir_ptr = pointer
 
     def visit_assign(self, node):
         value = node.value.accept(self)
@@ -1350,7 +1445,9 @@ class CodeGen:
             self.builder.call(
                 self.printf,
                 [
-                    self.string_pointer(self.int_fmt),
+                    self.string_pointer(
+                        self.int_fmt
+                    ),
                     value
                 ]
             )
@@ -1358,15 +1455,21 @@ class CodeGen:
         else:
             text = self.builder.select(
                 value,
-                self.string_pointer(self.true_string),
-                self.string_pointer(self.false_string),
+                self.string_pointer(
+                    self.true_string
+                ),
+                self.string_pointer(
+                    self.false_string
+                ),
                 name="bool_text"
             )
 
             self.builder.call(
                 self.printf,
                 [
-                    self.string_pointer(self.bool_fmt),
+                    self.string_pointer(
+                        self.bool_fmt
+                    ),
                     text
                 ]
             )
@@ -1422,9 +1525,11 @@ class CodeGen:
                 left_type in ("i32", "i64")
                 and right_type in ("i32", "i64")
             ):
-                compare_type = self.wider_integer_type(
-                    left_type,
-                    right_type
+                compare_type = (
+                    self.wider_integer_type(
+                        left_type,
+                        right_type
+                    )
                 )
 
                 left = self.coerce(
@@ -1440,7 +1545,9 @@ class CodeGen:
                 )
 
             predicate = (
-                "==" if node.op == "==" else "!="
+                "=="
+                if node.op == "=="
+                else "!="
             )
 
             return self.builder.icmp_signed(
@@ -1452,6 +1559,15 @@ class CodeGen:
 
         raise RuntimeError(
             f"unknown operator {node.op}"
+        )
+
+    def visit_not(self, node):
+        value = node.value.accept(self)
+
+        return self.builder.xor(
+            value,
+            ir.Constant(I1, 1),
+            name="nottmp"
         )
 
     def visit_var(self, node):
@@ -1471,7 +1587,6 @@ class CodeGen:
             I1,
             1 if node.value else 0
         )
-
 
 class AstPrinter:
     def __init__(self):

@@ -1,0 +1,11 @@
+i32 mut result{5}
+bool choose{false}
+if choose
+{
+result := result * 10
+}
+else
+{
+result := result + 7
+}
+exit result

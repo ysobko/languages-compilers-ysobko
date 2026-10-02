@@ -1,0 +1,12 @@
+i32 mut result{0}
+i64 number{3}
+if number == 3
+{
+result := 41
+}
+else
+{
+result := 99
+}
+result := result + 1
+exit result
