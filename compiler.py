@@ -939,7 +939,17 @@ class Parser:
 
 class SemanticChecker:
     def __init__(self):
-        self.symbols = {}
+        self.scopes = [{}]
+
+    def current_scope(self):
+        return self.scopes[-1]
+
+    def lookup(self, name):
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
+
+        return None
 
     def visit_program(self, node):
         for statement in node.statements:
@@ -947,11 +957,40 @@ class SemanticChecker:
 
         node.exit.accept(self)
 
-    def visit_decl(self, node):
-        if node.name in self.symbols:
+    def visit_block(self, node):
+        self.scopes.append({})
+
+        for statement in node.statements:
+            statement.accept(self)
+
+        if node.exit is not None:
+            node.exit.accept(self)
+
+        self.scopes.pop()
+
+    def visit_if(self, node):
+        condition_type = node.condition.accept(self)
+
+        if condition_type != "bool":
             raise CompileError(
                 f"line {node.line}:{node.column}: "
-                f"variable '{node.name}' is already declared"
+                f"the condition of 'if' must be bool, "
+                f"got {condition_type}"
+            )
+
+        node.then_block.accept(self)
+
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+    def visit_decl(self, node):
+        scope = self.current_scope()
+
+        if node.name in scope:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is already "
+                "declared in this block"
             )
 
         node.init.accept(self)
@@ -970,17 +1009,17 @@ class SemanticChecker:
             f"initialise '{node.name}'"
         )
 
-        self.symbols[node.name] = node
+        scope[node.name] = node
 
     def visit_assign(self, node):
-        if node.name not in self.symbols:
+        declaration = self.lookup(node.name)
+
+        if declaration is None:
             raise CompileError(
                 f"line {node.line}:{node.column}: "
                 f"variable '{node.name}' is "
                 "used before its declaration"
             )
-
-        declaration = self.symbols[node.name]
 
         if not declaration.mutable:
             raise CompileError(
@@ -1061,15 +1100,28 @@ class SemanticChecker:
             f"unknown operator '{node.op}'"
         )
 
+    def visit_not(self, node):
+        value_type = node.value.accept(self)
+
+        if value_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"cannot apply '!' to {value_type}"
+            )
+
+        node.type = "bool"
+        return node.type
+
     def visit_var(self, node):
-        if node.name not in self.symbols:
+        declaration = self.lookup(node.name)
+
+        if declaration is None:
             raise CompileError(
                 f"line {node.line}:{node.column}: "
                 f"variable '{node.name}' is "
                 "used before its declaration"
             )
 
-        declaration = self.symbols[node.name]
         node.decl = declaration
         node.type = declaration.type_name
 
@@ -1127,7 +1179,6 @@ class SemanticChecker:
             f"cannot {what} of type {want} "
             f"with a value of type {have}"
         )
-
 
 class CodeGen:
     def __init__(self):
