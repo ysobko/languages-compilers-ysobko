@@ -853,8 +853,15 @@ class Parser:
             and next_tokens[0].text == "else"
         ):
             self.next_line()
-            self.eat(text="else")
+            else_token = self.eat(text="else")
             self.ensure_end()
+
+            if self.peek_line() is None:
+                raise CompileError(
+                    f"line {else_token.line}:"
+                    f"{else_token.column}: "
+                    "expected '{' after 'else'"
+                )
 
             else_block = self.parse_block()
 
