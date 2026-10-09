@@ -1,0 +1,6 @@
+if true
+{
+exit 10
+i32 impossible{20}
+}
+exit 0

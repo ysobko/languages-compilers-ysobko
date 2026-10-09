@@ -1,0 +1,12 @@
+Program
+  Decl value i32 mut
+    Const 17
+  Decl condition bool const
+    Bool false
+  If
+    Var condition
+    Block
+      Assign value
+        Const 99
+  Exit
+    Var value
