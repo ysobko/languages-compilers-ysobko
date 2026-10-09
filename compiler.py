@@ -19,8 +19,15 @@ class CompileError(Exception):
 
 
 class ProgramNode:
-    def __init__(self, structs, statements, exit_node):
+    def __init__(
+        self,
+        structs,
+        functions,
+        statements,
+        exit_node
+    ):
         self.structs = structs
+        self.functions = functions
         self.statements = statements
         self.exit = exit_node
 
@@ -60,6 +67,41 @@ class FieldDeclNode:
 
     def accept(self, visitor):
         return visitor.visit_field_decl(self)
+
+
+class ParameterNode:
+    def __init__(self, name, type_name, line, column):
+        self.name = name
+        self.type_name = type_name
+        self.line = line
+        self.column = column
+        self.mutable = False
+        self.ir_ptr = None
+
+    def accept(self, visitor):
+        return visitor.visit_parameter(self)
+
+
+class FunctionNode:
+    def __init__(
+        self,
+        name,
+        parameters,
+        return_type,
+        body,
+        line,
+        column
+    ):
+        self.name = name
+        self.parameters = parameters
+        self.return_type = return_type
+        self.body = body
+        self.line = line
+        self.column = column
+        self.ir_function = None
+
+    def accept(self, visitor):
+        return visitor.visit_function(self)
 
 
 class DeclNode(StmtNode):
@@ -161,6 +203,19 @@ class VarNode(ExprNode):
         return visitor.visit_var(self)
 
 
+class CallNode(ExprNode):
+    def __init__(self, name, arguments, line, column):
+        super().__init__()
+        self.name = name
+        self.arguments = arguments
+        self.line = line
+        self.column = column
+        self.function = None
+
+    def accept(self, visitor):
+        return visitor.visit_call(self)
+
+
 class ConstNode(ExprNode):
     def __init__(self, value, line, column):
         super().__init__()
@@ -219,6 +274,7 @@ KEYWORDS = {
     "if": "keyword",
     "else": "keyword",
     "struct": "keyword",
+    "fn": "keyword",
 }
 
 
@@ -293,9 +349,19 @@ def lex(data: bytes):
                 )
 
             elif b == ord("-"):
-                tokens.append(
-                    Token("operator", "-", line, col)
-                )
+                if (
+                    i + 1 < len(data)
+                    and data[i + 1] == ord(">")
+                ):
+                    tokens.append(
+                        Token("operator", "->", line, col)
+                    )
+                    i += 1
+                    col += 1
+                else:
+                    tokens.append(
+                        Token("operator", "-", line, col)
+                    )
 
             elif b == ord("*"):
                 tokens.append(
@@ -305,6 +371,16 @@ def lex(data: bytes):
             elif b == ord(","):
                 tokens.append(
                     Token("punctuation", ",", line, col)
+                )
+
+            elif b == ord("("):
+                tokens.append(
+                    Token("punctuation", "(", line, col)
+                )
+
+            elif b == ord(")"):
+                tokens.append(
+                    Token("punctuation", ")", line, col)
                 )
 
             elif b == ord(":"):
@@ -602,6 +678,40 @@ class Parser:
         if token.kind == "identifier":
             self.eat(kind="identifier")
 
+            if (
+                self.peek() is not None
+                and self.peek().text == "("
+            ):
+                self.eat(text="(")
+                arguments = []
+
+                if (
+                    self.peek() is not None
+                    and self.peek().text != ")"
+                ):
+                    while True:
+                        arguments.append(
+                            self.parse_expr()
+                        )
+
+                        if (
+                            self.peek() is not None
+                            and self.peek().text == ","
+                        ):
+                            self.eat(text=",")
+                            continue
+
+                        break
+
+                self.eat(text=")")
+
+                return CallNode(
+                    token.text,
+                    arguments,
+                    token.line,
+                    token.column
+                )
+
             return VarNode(
                 token.text,
                 token.line,
@@ -792,7 +902,7 @@ class Parser:
 
     def parse_exit(self):
         start = self.eat(text="exit")
-        value = self.parse_factor()
+        value = self.parse_expr()
 
         return ExitNode(
             value,
@@ -1030,6 +1140,110 @@ class Parser:
                 )
             )
 
+    def parse_function(self):
+        fn_token = self.eat(text="fn")
+
+        name_token = self.peek()
+
+        if name_token is None:
+            raise CompileError(
+                f"line {fn_token.line}:"
+                f"{fn_token.column + len(fn_token.text)}: "
+                "expected function name"
+            )
+
+        name_token = self.eat(kind="identifier")
+        self.eat(text=":=")
+        self.eat(text="(")
+
+        parameters = []
+
+        if self.peek() is not None and self.peek().text != ")":
+            while True:
+                type_token = self.peek()
+
+                if type_token is None:
+                    raise CompileError(
+                        f"line {name_token.line}:"
+                        f"{self.end_column()}: "
+                        "expected parameter type"
+                    )
+
+                if (
+                    type_token.text not in ("i32", "i64", "bool")
+                    and type_token.kind != "identifier"
+                ):
+                    error_at(
+                        type_token,
+                        "expected parameter type"
+                    )
+
+                self.eat()
+
+                param_token = self.peek()
+
+                if param_token is None:
+                    raise CompileError(
+                        f"line {type_token.line}:"
+                        f"{self.end_column()}: "
+                        "expected parameter name"
+                    )
+
+                param_token = self.eat(kind="identifier")
+
+                parameters.append(
+                    ParameterNode(
+                        param_token.text,
+                        type_token.text,
+                        param_token.line,
+                        param_token.column
+                    )
+                )
+
+                if (
+                    self.peek() is not None
+                    and self.peek().text == ","
+                ):
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text=")")
+        self.eat(text="->")
+
+        return_type = self.peek()
+
+        if return_type is None:
+            raise CompileError(
+                f"line {name_token.line}:"
+                f"{self.end_column()}: "
+                "expected return type"
+            )
+
+        if (
+            return_type.text not in ("i32", "i64", "bool")
+            and return_type.kind != "identifier"
+        ):
+            error_at(
+                return_type,
+                "expected return type"
+            )
+
+        self.eat()
+        self.ensure_end()
+
+        body = self.parse_block()
+
+        return FunctionNode(
+            name_token.text,
+            parameters,
+            return_type.text,
+            body,
+            fn_token.line,
+            fn_token.column
+        )
+
     def parse_statement(self):
         token = self.peek()
 
@@ -1070,6 +1284,7 @@ class Parser:
 
     def parse_program(self):
         structs = []
+        functions = []
         statements = []
         exit_node = None
 
@@ -1085,6 +1300,11 @@ class Parser:
             if first.text == "struct":
                 struct_node = self.parse_struct()
                 structs.append(struct_node)
+                continue
+
+            if first.text == "fn":
+                function_node = self.parse_function()
+                functions.append(function_node)
                 continue
 
             if first.text == "exit":
@@ -1109,15 +1329,19 @@ class Parser:
 
         return ProgramNode(
             structs,
+            functions,
             statements,
             exit_node
         )
+
 
 
 class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]
         self.structs = {}
+        self.functions = {}
+        self.current_function = None
 
     def current_scope(self):
         return self.scopes[-1]
@@ -1132,6 +1356,27 @@ class SemanticChecker:
     def visit_program(self, node):
         for struct in node.structs:
             struct.accept(self)
+
+        for function in node.functions:
+            if function.name in self.functions:
+                raise CompileError(
+                    f"line {function.line}:{function.column}: "
+                    f"function '{function.name}' is already declared"
+                )
+
+            if (
+                function.return_type not in ("i32", "i64", "bool")
+                and function.return_type not in self.structs
+            ):
+                raise CompileError(
+                    f"line {function.line}:{function.column}: "
+                    f"unknown return type '{function.return_type}'"
+                )
+
+            self.functions[function.name] = function
+
+        for function in node.functions:
+            function.accept(self)
 
         for statement in node.statements:
             statement.accept(self)
@@ -1203,6 +1448,47 @@ class SemanticChecker:
 
         if node.else_block is not None:
             node.else_block.accept(self)
+
+    def visit_function(self, node):
+        previous_scopes = self.scopes
+        previous_function = self.current_function
+
+        self.scopes = [{}]
+        self.current_function = node
+
+        for parameter in node.parameters:
+            parameter.accept(self)
+
+        node.body.accept(self)
+
+        if node.body.exit is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"function '{node.name}' must end with exit"
+            )
+
+        self.current_function = previous_function
+        self.scopes = previous_scopes
+
+    def visit_parameter(self, node):
+        scope = self.current_scope()
+
+        if node.name in scope:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"parameter '{node.name}' is already declared"
+            )
+
+        if (
+            node.type_name not in ("i32", "i64", "bool")
+            and node.type_name not in self.structs
+        ):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"unknown type '{node.type_name}'"
+            )
+
+        scope[node.name] = node
 
     def visit_decl(self, node):
         scope = self.current_scope()
@@ -1357,6 +1643,16 @@ class SemanticChecker:
     def visit_exit(self, node):
         node.value.accept(self)
 
+        if self.current_function is not None:
+            self.check_assignable(
+                node.value,
+                self.current_function.return_type,
+                node.line,
+                node.column,
+                f"return from function '{self.current_function.name}'"
+            )
+            return
+
         if node.value.type not in ("i32", "i64", "bool"):
             raise CompileError(
                 f"line {node.line}:{node.column}: "
@@ -1419,6 +1715,47 @@ class SemanticChecker:
             )
 
         node.type = "bool"
+        return node.type
+
+    def visit_call(self, node):
+        function = self.functions.get(node.name)
+
+        if function is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"unknown function '{node.name}'"
+            )
+
+        if len(node.arguments) != len(function.parameters):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"function '{node.name}' expects "
+                f"{len(function.parameters)} arguments, "
+                f"got {len(node.arguments)}"
+            )
+
+        for argument, parameter in zip(
+            node.arguments,
+            function.parameters
+        ):
+            argument.accept(self)
+
+            if isinstance(argument, ConstNode):
+                self.check_constant_for_target(
+                    argument,
+                    parameter.type_name
+                )
+
+            self.check_assignable(
+                argument,
+                parameter.type_name,
+                argument.line,
+                argument.column,
+                f"pass argument to '{node.name}'"
+            )
+
+        node.function = function
+        node.type = function.return_type
         return node.type
 
     def visit_var(self, node):
@@ -1592,6 +1929,24 @@ class CodeGen:
 
             struct_type.set_body(*field_types)
 
+    def create_function_declarations(self, node):
+        for function in node.functions:
+            parameter_types = [
+                self.llvm_type(parameter.type_name)
+                for parameter in function.parameters
+            ]
+
+            function_type = ir.FunctionType(
+                self.llvm_type(function.return_type),
+                parameter_types
+            )
+
+            function.ir_function = ir.Function(
+                self.module,
+                function_type,
+                name=f"user_{function.name}"
+            )
+
     def string_pointer(self, global_string):
         zero = ir.Constant(I32, 0)
 
@@ -1663,6 +2018,11 @@ class CodeGen:
     def visit_program(self, node):
         self.current_program = node
         self.create_struct_types(node)
+        self.create_function_declarations(node)
+
+        for function in node.functions:
+            function.accept(self)
+
         self.allocate_declarations(node)
 
         for statement in node.statements:
@@ -1672,6 +2032,43 @@ class CodeGen:
             node.exit.accept(self)
 
         return str(self.module)
+
+    def visit_function(self, node):
+        previous_builder = self.builder
+        previous_function = getattr(
+            self,
+            "current_function",
+            None
+        )
+
+        self.current_function = node
+
+        entry = node.ir_function.append_basic_block(
+            "entry"
+        )
+        self.builder = ir.IRBuilder(entry)
+
+        for parameter, argument in zip(
+            node.parameters,
+            node.ir_function.args
+        ):
+            argument.name = parameter.name
+
+            parameter.ir_ptr = self.builder.alloca(
+                self.llvm_type(parameter.type_name),
+                name=f"{parameter.name}_slot"
+            )
+
+            self.builder.store(
+                argument,
+                parameter.ir_ptr
+            )
+
+        self.allocate_declarations(node.body)
+        node.body.accept(self)
+
+        self.current_function = previous_function
+        self.builder = previous_builder
 
     def visit_block(self, node):
         for statement in node.statements:
@@ -1689,22 +2086,21 @@ class CodeGen:
     def visit_if(self, node):
         condition = node.condition.accept(self)
 
-        then_bb = (
-            self.main_function
-            .append_basic_block("then")
+        current_ir_function = self.builder.block.function
+
+        then_bb = current_ir_function.append_basic_block(
+            "then"
         )
 
         if node.else_block is not None:
-            else_bb = (
-                self.main_function
-                .append_basic_block("else")
+            else_bb = current_ir_function.append_basic_block(
+                "else"
             )
         else:
             else_bb = None
 
-        merge_bb = (
-            self.main_function
-            .append_basic_block("merge")
+        merge_bb = current_ir_function.append_basic_block(
+            "merge"
         )
 
         self.builder.cbranch(
@@ -1820,6 +2216,22 @@ class CodeGen:
     def visit_exit(self, node):
         value = node.value.accept(self)
         value_type = node.value.type
+
+        current_function = getattr(
+            self,
+            "current_function",
+            None
+        )
+
+        if current_function is not None:
+            value = self.coerce(
+                value,
+                value_type,
+                current_function.return_type
+            )
+
+            self.builder.ret(value)
+            return
 
         if value_type in ("i32", "i64"):
             value = self.coerce(
@@ -1956,6 +2368,29 @@ class CodeGen:
             name="nottmp"
         )
 
+    def visit_call(self, node):
+        arguments = []
+
+        for argument, parameter in zip(
+            node.arguments,
+            node.function.parameters
+        ):
+            value = argument.accept(self)
+
+            value = self.coerce(
+                value,
+                argument.type,
+                parameter.type_name
+            )
+
+            arguments.append(value)
+
+        return self.builder.call(
+            node.function.ir_function,
+            arguments,
+            name=f"call_{node.name}"
+        )
+
     def visit_var(self, node):
         return self.builder.load(
             node.decl.ir_ptr,
@@ -1990,6 +2425,9 @@ class AstPrinter:
         for struct in node.structs:
             struct.accept(self)
 
+        for function in node.functions:
+            function.accept(self)
+
         for statement in node.statements:
             statement.accept(self)
 
@@ -2009,6 +2447,23 @@ class AstPrinter:
         kind = "mut" if node.mutable else "const"
         self.write(
             f"Field {node.name} {node.type_name} {kind}"
+        )
+
+    def visit_function(self, node):
+        self.write(
+            f"Function {node.name} -> {node.return_type}"
+        )
+        self.indent += 2
+
+        for parameter in node.parameters:
+            parameter.accept(self)
+
+        node.body.accept(self)
+        self.indent -= 2
+
+    def visit_parameter(self, node):
+        self.write(
+            f"Parameter {node.name} {node.type_name}"
         )
 
     def visit_decl(self, node):
@@ -2073,6 +2528,15 @@ class AstPrinter:
         self.indent += 2
         node.left.accept(self)
         node.right.accept(self)
+        self.indent -= 2
+
+    def visit_call(self, node):
+        self.write(f"Call {node.name}")
+        self.indent += 2
+
+        for argument in node.arguments:
+            argument.accept(self)
+
         self.indent -= 2
 
     def visit_var(self, node):
