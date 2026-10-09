@@ -1,0 +1,7 @@
+fn add := (i32 a, i32 b) -> i32
+{
+i32 result{a + b}
+exit result
+}
+i32 result{add(10)}
+exit result

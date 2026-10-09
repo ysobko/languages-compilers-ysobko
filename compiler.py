@@ -122,12 +122,21 @@ class DeclNode(StmtNode):
 
 
 class AssignNode(StmtNode):
-    def __init__(self, name, value, line, column):
+    def __init__(
+        self,
+        name,
+        value,
+        line,
+        column,
+        fields=None
+    ):
         self.name = name
         self.value = value
         self.line = line
         self.column = column
+        self.fields = fields or []
         self.decl = None
+        self.resolved_fields = []
 
     def accept(self, visitor):
         return visitor.visit_assign(self)
@@ -201,6 +210,20 @@ class VarNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_var(self)
+
+
+class FieldAccessNode(ExprNode):
+    def __init__(self, name, fields, line, column):
+        super().__init__()
+        self.name = name
+        self.fields = fields
+        self.line = line
+        self.column = column
+        self.decl = None
+        self.resolved_fields = []
+
+    def accept(self, visitor):
+        return visitor.visit_field_access(self)
 
 
 class CallNode(ExprNode):
@@ -371,6 +394,11 @@ def lex(data: bytes):
             elif b == ord(","):
                 tokens.append(
                     Token("punctuation", ",", line, col)
+                )
+
+            elif b == ord("."):
+                tokens.append(
+                    Token("punctuation", ".", line, col)
                 )
 
             elif b == ord("("):
@@ -712,6 +740,27 @@ class Parser:
                     token.column
                 )
 
+            if (
+                self.peek() is not None
+                and self.peek().text == "."
+            ):
+                fields = []
+
+                while (
+                    self.peek() is not None
+                    and self.peek().text == "."
+                ):
+                    self.eat(text=".")
+                    field = self.eat(kind="identifier")
+                    fields.append(field.text)
+
+                return FieldAccessNode(
+                    token.text,
+                    fields,
+                    token.line,
+                    token.column
+                )
+
             return VarNode(
                 token.text,
                 token.line,
@@ -873,6 +922,15 @@ class Parser:
 
     def parse_assign(self):
         name_token = self.eat(kind="identifier")
+        fields = []
+
+        while (
+            self.peek() is not None
+            and self.peek().text == "."
+        ):
+            self.eat(text=".")
+            field = self.eat(kind="identifier")
+            fields.append(field.text)
 
         token = self.peek()
 
@@ -897,12 +955,13 @@ class Parser:
             name_token.text,
             value,
             name_token.line,
-            name_token.column
+            name_token.column,
+            fields
         )
 
     def parse_exit(self):
         start = self.eat(text="exit")
-        value = self.parse_expr()
+        value = self.parse_factor()
 
         return ExitNode(
             value,
@@ -1251,9 +1310,18 @@ class Parser:
             return self.parse_decl()
 
         if token.kind == "identifier":
+            position = self.position + 1
+
+            while (
+                position + 1 < len(self.tokens)
+                and self.tokens[position].text == "."
+                and self.tokens[position + 1].kind == "identifier"
+            ):
+                position += 2
+
             if (
-                self.position + 1 < len(self.tokens)
-                and self.tokens[self.position + 1].text == ":="
+                position < len(self.tokens)
+                and self.tokens[position].text == ":="
             ):
                 return self.parse_assign()
 
@@ -1287,6 +1355,7 @@ class Parser:
         functions = []
         statements = []
         exit_node = None
+        phase = "struct"
 
         while self.next_line():
             first = self.peek()
@@ -1298,11 +1367,24 @@ class Parser:
                 )
 
             if first.text == "struct":
+                if phase != "struct":
+                    error_at(
+                        first,
+                        "struct declaration is not allowed here"
+                    )
+
                 struct_node = self.parse_struct()
                 structs.append(struct_node)
                 continue
 
             if first.text == "fn":
+                if phase == "statement":
+                    error_at(
+                        first,
+                        "function declaration is not allowed after statements"
+                    )
+
+                phase = "function"
                 function_node = self.parse_function()
                 functions.append(function_node)
                 continue
@@ -1318,6 +1400,7 @@ class Parser:
                     "'else' without an 'if'"
                 )
 
+            phase = "statement"
             node = self.parse_statement()
             self.ensure_end()
             statements.append(node)
@@ -1610,31 +1693,76 @@ class SemanticChecker:
                 "it is not mut"
             )
 
-        if (
-            declaration.type_name in self.structs
-            and not self.struct_is_fully_mutable(
-                declaration.type_name
-            )
-        ):
-            raise CompileError(
-                f"line {node.line}:{node.column}: "
-                f"cannot assign whole struct "
-                f"'{declaration.type_name}': "
-                "not all fields are mut"
-            )
-
         node.decl = declaration
+
+        if node.fields:
+            current_type = declaration.type_name
+            node.resolved_fields = []
+
+            for field_name in node.fields:
+                struct = self.structs.get(current_type)
+
+                if struct is None:
+                    raise CompileError(
+                        f"line {node.line}:{node.column}: "
+                        f"type '{current_type}' has no fields"
+                    )
+
+                field = next(
+                    (
+                        field
+                        for field in struct.fields
+                        if field.name == field_name
+                    ),
+                    None
+                )
+
+                if field is None:
+                    raise CompileError(
+                        f"line {node.line}:{node.column}: "
+                        f"struct '{current_type}' has no field "
+                        f"'{field_name}'"
+                    )
+
+                if not field.mutable:
+                    raise CompileError(
+                        f"line {node.line}:{node.column}: "
+                        f"cannot assign through field "
+                        f"'{field_name}': it is not mut"
+                    )
+
+                node.resolved_fields.append(field)
+                current_type = field.type_name
+
+            target_type = current_type
+
+        else:
+            target_type = declaration.type_name
+
+            if (
+                target_type in self.structs
+                and not self.struct_is_fully_mutable(
+                    target_type
+                )
+            ):
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot assign whole struct "
+                    f"'{target_type}': "
+                    "not all fields are mut"
+                )
+
         node.value.accept(self)
 
         if isinstance(node.value, ConstNode):
             self.check_constant_for_target(
                 node.value,
-                declaration.type_name
+                target_type
             )
 
         self.check_assignable(
             node.value,
-            declaration.type_name,
+            target_type,
             node.line,
             node.column,
             f"assign to '{node.name}'"
@@ -1771,6 +1899,51 @@ class SemanticChecker:
         node.decl = declaration
         node.type = declaration.type_name
 
+        return node.type
+
+    def visit_field_access(self, node):
+        declaration = self.lookup(node.name)
+
+        if declaration is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is "
+                "used before its declaration"
+            )
+
+        node.decl = declaration
+        current_type = declaration.type_name
+        node.resolved_fields = []
+
+        for field_name in node.fields:
+            struct = self.structs.get(current_type)
+
+            if struct is None:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"type '{current_type}' has no fields"
+                )
+
+            field = next(
+                (
+                    field
+                    for field in struct.fields
+                    if field.name == field_name
+                ),
+                None
+            )
+
+            if field is None:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"struct '{current_type}' has no field "
+                    f"'{field_name}'"
+                )
+
+            node.resolved_fields.append(field)
+            current_type = field.type_name
+
+        node.type = current_type
         return node.type
 
     def visit_const(self, node):
@@ -2202,15 +2375,34 @@ class CodeGen:
     def visit_assign(self, node):
         value = node.value.accept(self)
 
+        if node.fields:
+            target_type = node.resolved_fields[-1].type_name
+        else:
+            target_type = node.decl.type_name
+
         value = self.coerce(
             value,
             node.value.type,
-            node.decl.type_name
+            target_type
         )
+
+        pointer = node.decl.ir_ptr
+
+        if node.fields:
+            for field in node.resolved_fields:
+                pointer = self.builder.gep(
+                    pointer,
+                    [
+                        ir.Constant(I32, 0),
+                        ir.Constant(I32, field.index)
+                    ],
+                    inbounds=True,
+                    name=f"assign_{field.name}"
+                )
 
         self.builder.store(
             value,
-            node.decl.ir_ptr
+            pointer
         )
 
     def visit_exit(self, node):
@@ -2397,6 +2589,25 @@ class CodeGen:
             name=f"load_{node.name}"
         )
 
+    def visit_field_access(self, node):
+        pointer = node.decl.ir_ptr
+
+        for field in node.resolved_fields:
+            pointer = self.builder.gep(
+                pointer,
+                [
+                    ir.Constant(I32, 0),
+                    ir.Constant(I32, field.index)
+                ],
+                inbounds=True,
+                name=f"field_{field.name}"
+            )
+
+        return self.builder.load(
+            pointer,
+            name=f"load_{node.fields[-1]}"
+        )
+
     def visit_const(self, node):
         return ir.Constant(
             self.llvm_type(node.type),
@@ -2542,6 +2753,12 @@ class AstPrinter:
     def visit_var(self, node):
         self.write(
             f"Var {node.name}"
+        )
+
+    def visit_field_access(self, node):
+        self.write(
+            f"FieldAccess {node.name}."
+            + ".".join(node.fields)
         )
 
     def visit_const(self, node):

@@ -1,0 +1,6 @@
+i32 x{10}
+fn getValue := () -> i32
+{
+exit 5
+}
+exit x
