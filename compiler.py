@@ -187,6 +187,17 @@ class ExprNode:
         self.type = None
 
 
+class StructInitNode(ExprNode):
+    def __init__(self, values, line, column):
+        super().__init__()
+        self.values = values
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_struct_init(self)
+
+
 class BinOpNode(ExprNode):
     def __init__(self, op, left, right, line, column):
         super().__init__()
@@ -832,6 +843,41 @@ class Parser:
 
         return left
 
+    def parse_initializer_value(self):
+        token = self.peek()
+
+        if token is None or token.text != "{":
+            return self.parse_expr()
+
+        open_brace = self.eat(text="{")
+        values = []
+
+        if self.peek() is not None and self.peek().text != "}":
+            values.append(self.parse_initializer_value())
+
+            while (
+                self.peek() is not None
+                and self.peek().text == ","
+            ):
+                self.eat(text=",")
+                values.append(self.parse_initializer_value())
+
+        token = self.peek()
+
+        if token is None:
+            raise CompileError(
+                f"line {open_brace.line}:"
+                f"{self.end_column()}: expected '}}', found end of line"
+            )
+
+        self.eat(text="}")
+
+        return StructInitNode(
+            values,
+            open_brace.line,
+            open_brace.column
+        )
+
     def parse_decl(self):
         type_token = self.peek()
 
@@ -890,14 +936,14 @@ class Parser:
         values = []
 
         if self.peek() is not None and self.peek().text != "}":
-            values.append(self.parse_expr())
+            values.append(self.parse_initializer_value())
 
             while (
                 self.peek() is not None
                 and self.peek().text == ","
             ):
                 self.eat(text=",")
-                values.append(self.parse_expr())
+                values.append(self.parse_initializer_value())
 
         token = self.peek()
 
@@ -1573,6 +1619,59 @@ class SemanticChecker:
 
         scope[node.name] = node
 
+    def check_initializer_value(
+        self,
+        value,
+        target_type,
+        what
+    ):
+        if isinstance(value, StructInitNode):
+            struct = self.structs.get(target_type)
+
+            if struct is None:
+                raise CompileError(
+                    f"line {value.line}:{value.column}: "
+                    f"nested initialiser cannot initialise "
+                    f"non-struct type '{target_type}'"
+                )
+
+            if len(value.values) != len(struct.fields):
+                raise CompileError(
+                    f"line {value.line}:{value.column}: "
+                    f"struct '{target_type}' needs "
+                    f"{len(struct.fields)} initialiser values, "
+                    f"got {len(value.values)}"
+                )
+
+            for nested_value, field in zip(
+                value.values,
+                struct.fields
+            ):
+                self.check_initializer_value(
+                    nested_value,
+                    field.type_name,
+                    f"initialise field '{field.name}'"
+                )
+
+            value.type = target_type
+            return
+
+        value.accept(self)
+
+        if isinstance(value, ConstNode):
+            self.check_constant_for_target(
+                value,
+                target_type
+            )
+
+        self.check_assignable(
+            value,
+            target_type,
+            value.line,
+            value.column,
+            what
+        )
+
     def visit_decl(self, node):
         scope = self.current_scope()
 
@@ -1621,7 +1720,10 @@ class SemanticChecker:
 
         values = node.init_values
 
-        if len(values) == 1:
+        if (
+            len(values) == 1
+            and not isinstance(values[0], StructInitNode)
+        ):
             value = values[0]
             value.accept(self)
 
@@ -1638,19 +1740,9 @@ class SemanticChecker:
             )
 
         for value, field in zip(values, struct.fields):
-            value.accept(self)
-
-            if isinstance(value, ConstNode):
-                self.check_constant_for_target(
-                    value,
-                    field.type_name
-                )
-
-            self.check_assignable(
+            self.check_initializer_value(
                 value,
                 field.type_name,
-                value.line,
-                value.column,
                 f"initialise field '{field.name}'"
             )
 
@@ -2303,6 +2395,49 @@ class CodeGen:
 
         self.builder.position_at_end(merge_bb)
 
+    def emit_initializer_value(
+        self,
+        value_node,
+        target_type
+    ):
+        if isinstance(value_node, StructInitNode):
+            struct = None
+
+            for candidate in self.current_program.structs:
+                if candidate.name == target_type:
+                    struct = candidate
+                    break
+
+            aggregate = ir.Constant(
+                self.llvm_type(target_type),
+                None
+            )
+
+            for index, (nested_value, field) in enumerate(
+                zip(value_node.values, struct.fields)
+            ):
+                value = self.emit_initializer_value(
+                    nested_value,
+                    field.type_name
+                )
+
+                aggregate = self.builder.insert_value(
+                    aggregate,
+                    value,
+                    index,
+                    name=f"{target_type.lower()}_init"
+                )
+
+            return aggregate
+
+        value = value_node.accept(self)
+
+        return self.coerce(
+            value,
+            value_node.type,
+            target_type
+        )
+
     def visit_decl(self, node):
         if node.type_name in ("i32", "i64", "bool"):
             value = node.init_values[0].accept(self)
@@ -2338,8 +2473,6 @@ class CodeGen:
         for index, value_node in enumerate(
             node.init_values
         ):
-            value = value_node.accept(self)
-
             struct = None
 
             for candidate in self.current_program.structs:
@@ -2349,9 +2482,8 @@ class CodeGen:
 
             field = struct.fields[index]
 
-            value = self.coerce(
-                value,
-                value_node.type,
+            value = self.emit_initializer_value(
+                value_node,
                 field.type_name
             )
 
@@ -2730,6 +2862,15 @@ class AstPrinter:
         self.indent += 2
         node.value.accept(self)
         self.indent -= 2
+
+    def visit_struct_init(self, node):
+        self.write("StructInit")
+        self.indent += 1
+
+        for value in node.values:
+            value.accept(self)
+
+        self.indent -= 1
 
     def visit_binop(self, node):
         self.write(

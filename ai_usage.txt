@@ -43,3 +43,21 @@ Testing:
 - I ran `git diff --check` to check the final changes for whitespace errors.
 
 I reviewed the suggested code, applied the changes incrementally, ran the compiler and LLVM tools locally, inspected the generated AST and LLVM IR, and verified the final implementation with the complete test suite.
+
+Additional Task — Nested Struct Initialisation
+
+ChatGPT was used to help implement and test the additional nested struct initialisation task.
+
+It helped with:
+- adding a StructInitNode to represent nested brace initialisers in the AST;
+- extending declaration parsing with recursive initialiser parsing;
+- implementing recursive semantic checking based on the expected struct field type;
+- preserving existing whole-struct copy initialisation;
+- reporting errors at the opening nested brace for invalid nested initialisers;
+- generating nested LLVM struct values using insertvalue;
+- supporting recursively nested initialisers such as C c{{{42}}};
+- adding tests for valid nested initialisation, recursive nesting, built-in field errors, and incorrect nested value counts;
+- updating the grammar to describe recursive initialisers;
+- checking AST output for the new StructInitNode.
+
+The implementation was applied incrementally and tested after each change. The complete test suite was rerun to verify that the additional task did not break the existing Practice 6 functionality.
