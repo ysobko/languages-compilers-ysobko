@@ -251,6 +251,19 @@ class FieldAccessNode(ExprNode):
         return visitor.visit_field_access(self)
 
 
+class ResultFieldNode(ExprNode):
+    def __init__(self, obj, field, line, column):
+        super().__init__()
+        self.obj = obj
+        self.field = field
+        self.line = line
+        self.column = column
+        self.resolved_field = None
+
+    def accept(self, visitor):
+        return visitor.visit_result_field(self)
+
+
 class CallNode(ExprNode):
     def __init__(self, name, arguments, line, column):
         super().__init__()
@@ -917,8 +930,46 @@ class Parser:
             "expected a constant or variable"
         )
 
+    def parse_postfix(self, node):
+        while self.peek() is not None and self.peek().text == ".":
+            dot = self.eat(text=".")
+            name = self.eat(kind="identifier")
+
+            if self.peek() is not None and self.peek().text == "(":
+                self.eat(text="(")
+                arguments = []
+
+                if self.peek() is not None and self.peek().text != ")":
+                    while True:
+                        arguments.append(self.parse_expr())
+
+                        if self.peek() is not None and self.peek().text == ",":
+                            self.eat(text=",")
+                            continue
+
+                        break
+
+                self.eat(text=")")
+
+                node = MemberCallNode(
+                    node,
+                    name.text,
+                    arguments,
+                    dot.line,
+                    dot.column
+                )
+            else:
+                node = ResultFieldNode(
+                    node,
+                    name.text,
+                    dot.line,
+                    dot.column
+                )
+
+        return node
+
     def parse_term(self):
-        left = self.parse_factor()
+        left = self.parse_postfix(self.parse_factor())
 
         while (
             self.peek() is not None
@@ -1846,12 +1897,13 @@ class SemanticChecker:
                 if node.method.is_mutating:
                     receiver = node.obj
 
-                    if not receiver.decl.mutable:
-                        raise CompileError(
-                            f"line {node.line}:{node.column}: "
-                            f"cannot call mutating member function "
-                            f"'{node.name}' on const object"
-                        )
+                    if isinstance(receiver, (VarNode, FieldAccessNode)):
+                        if not receiver.decl.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                f"cannot call mutating member function "
+                                f"'{node.name}' on const object"
+                            )
 
                     if isinstance(receiver, FieldAccessNode):
                         for field in receiver.resolved_fields:
@@ -2405,6 +2457,38 @@ class SemanticChecker:
             )
 
         node.type = "bool"
+        return node.type
+
+    def visit_result_field(self, node):
+        object_type = node.obj.accept(self)
+
+        struct = self.structs.get(object_type)
+
+        if struct is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"type '{object_type}' has no fields"
+            )
+
+        field = next(
+            (
+                field
+                for field in struct.fields
+                if field.name == node.field
+            ),
+            None
+        )
+
+        if field is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"struct '{object_type}' has no field "
+                f"'{node.field}'"
+            )
+
+        node.resolved_field = field
+        node.type = field.type_name
+
         return node.type
 
     def visit_member_call(self, node):
@@ -3464,6 +3548,15 @@ class CodeGen:
             name="nottmp"
         )
 
+    def visit_result_field(self, node):
+        value = node.obj.accept(self)
+
+        return self.builder.extract_value(
+            value,
+            node.resolved_field.index,
+            name=f"result_{node.field}"
+        )
+
     def visit_member_call(self, node):
         obj = node.obj
 
@@ -3504,9 +3597,14 @@ class CodeGen:
                 )
 
         else:
-            raise RuntimeError(
-                "unsupported member call receiver"
+            value = obj.accept(self)
+
+            pointer = self.builder.alloca(
+                self.llvm_type(obj.type),
+                name="temporary_receiver"
             )
+
+            self.builder.store(value, pointer)
 
         arguments = [pointer]
 
@@ -3820,6 +3918,12 @@ class AstPrinter:
             f"FieldAccess {node.name}."
             + ".".join(node.fields)
         )
+
+    def visit_result_field(self, node):
+        self.write(f"ResultField {node.field}")
+        self.indent += 2
+        node.obj.accept(self)
+        self.indent -= 2
 
     def visit_const(self, node):
         self.write(

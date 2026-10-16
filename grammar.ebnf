@@ -31,15 +31,17 @@ field ::= ident "." ident { "." ident }
 call ::= ident "(" [ expr { "," expr } ] ")"
 member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
 
-factor ::= number
-         | "true"
-         | "false"
-         | ident
-         | field
-         | call
-         | member_call
-         | read
-         | "!" factor
+factor ::= primary { postfix }
+
+primary ::= number
+          | "true"
+          | "false"
+          | ident
+          | call
+          | read
+          | "!" factor
+
+postfix ::= "." ident [ "(" [ expr { "," expr } ] ")" ]
 
 string ::= '"' { string_char } '"'
 

@@ -1,0 +1,19 @@
+struct Point
+{
+    i32 mut x
+}
+
+struct Container
+{
+    Point point
+
+    fn getPoint := () -> Point
+    {
+        exit point
+    }
+}
+
+Point p{3}
+Container c{p}
+c.getPoint().x := 10
+exit 0
