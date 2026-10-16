@@ -1,0 +1,24 @@
+struct Temperature
+{
+    i32 value
+
+    fn check := (i32 limit) -> i32
+    {
+        if value == limit
+        {
+            print("Temperature equals limit")
+        }
+        else
+        {
+            print("Temperature differs from limit")
+        }
+        print(value)
+        exit value
+    }
+}
+
+Temperature t{25}
+i32 result{t.check(20)}
+print(result)
+
+exit 0
