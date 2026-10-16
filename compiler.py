@@ -297,6 +297,37 @@ class NotNode(ExprNode):
         return visitor.visit_not(self)
 
 
+class ReadNode(ExprNode):
+    def __init__(self, line, column):
+        super().__init__()
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_read(self)
+
+
+class StringNode(ExprNode):
+    def __init__(self, value, line, column):
+        super().__init__()
+        self.value = value
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_string(self)
+
+
+class PrintNode(StmtNode):
+    def __init__(self, value, line, column):
+        self.value = value
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_print(self)
+
+
 class Token:
     def __init__(self, kind, text, line, column):
         self.kind = kind
@@ -323,6 +354,8 @@ KEYWORDS = {
     "else": "keyword",
     "struct": "keyword",
     "fn": "keyword",
+    "read": "keyword",
+    "print": "keyword",
 }
 
 
@@ -370,6 +403,33 @@ def lex(data: bytes):
 
                 line += 1
                 col = 0
+
+            elif b == ord('"'):
+                start_col = col
+                end = data.find(b'"', i + 1)
+
+                if end == -1 or b"\n" in data[i + 1:end]:
+                    raise CompileError(
+                        f"line {line}:{col}: unterminated string literal"
+                    )
+
+                value = data[i + 1:end]
+
+                if b"\\" in value:
+                    raise CompileError(
+                        f"line {line}:{col}: string escapes are not supported"
+                    )
+
+                try:
+                    text = value.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise CompileError(
+                        f"line {line}:{col}: invalid UTF-8 string"
+                    )
+
+                tokens.append(Token("string", text, line, col))
+                col += end - i
+                i = end
 
             elif is_alpha(b):
                 state = "IDENT"
@@ -709,6 +769,19 @@ class Parser:
                 operator.line,
                 operator.column
             )
+
+        if token.text == "read":
+            self.eat(text="read")
+            self.eat(text="(")
+
+            if self.peek() is not None and self.peek().text != ")":
+                error_at(self.peek(), "read() takes no arguments")
+
+            self.eat(text=")")
+            return ReadNode(token.line, token.column)
+
+        if token.kind == "string":
+            error_at(token, "string literal is only allowed in print()")
 
         if token.kind == "number":
             self.eat(kind="number")
@@ -1443,8 +1516,33 @@ class Parser:
             fn_token.column
         )
 
+    def parse_print(self):
+        token = self.eat(text="print")
+        self.eat(text="(")
+
+        if self.peek() is None or self.peek().text == ")":
+            raise CompileError(
+                f"line {token.line}:{token.column}: print() expects one argument"
+            )
+
+        if self.peek().kind == "string":
+            string_token = self.eat(kind="string")
+            value = StringNode(
+                string_token.text,
+                string_token.line,
+                string_token.column
+            )
+        else:
+            value = self.parse_expr()
+
+        self.eat(text=")")
+        return PrintNode(value, token.line, token.column)
+
     def parse_statement(self):
         token = self.peek()
+
+        if token.text == "print":
+            return self.parse_print()
 
         if token.text in ("i32", "i64", "bool"):
             return self.parse_decl()
@@ -1634,6 +1732,10 @@ class SemanticChecker:
                 yield from expressions(node.value)
                 return
 
+            if isinstance(node, PrintNode):
+                yield from expressions(node.value)
+                return
+
             if isinstance(node, DeclNode):
                 for value in node.init_values:
                     yield from expressions(value)
@@ -1694,6 +1796,7 @@ class SemanticChecker:
                         return
 
                     if isinstance(node, IfNode):
+                        scan(node.condition)
                         scan(node.then_block)
                         scan(node.else_block)
                         return
@@ -1771,6 +1874,10 @@ class SemanticChecker:
                 check_calls(node.else_block)
                 return
 
+            if isinstance(node, PrintNode):
+                check_calls(node.value)
+                return
+
             if isinstance(node, DeclNode):
                 for value in node.init_values:
                     check_calls(value)
@@ -1813,6 +1920,25 @@ class SemanticChecker:
             check_calls(statement)
 
         check_calls(program.exit)
+
+    def visit_read(self, node):
+        node.type = "i32"
+        return node.type
+
+    def visit_string(self, node):
+        node.type = "string"
+        return node.type
+
+    def visit_print(self, node):
+        node.value.accept(self)
+
+        if node.value.type not in (
+            "i32", "i64", "bool", "string"
+        ) and node.value.type not in self.structs:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"cannot print type '{node.value.type}'"
+            )
 
     def visit_struct(self, node):
         if node.name in self.structs:
@@ -2587,6 +2713,28 @@ class CodeGen:
             b"Program exit with result %s\n\0"
         )
 
+        scanf_type = ir.FunctionType(
+            I32, [ir.PointerType(I8)], var_arg=True
+        )
+        self.scanf = ir.Function(
+            self.module, scanf_type, name="scanf"
+        )
+
+        self.read_fmt = self.make_string(
+            "read_fmt", b"%d\0"
+        )
+        self.print_int_fmt = self.make_string(
+            "print_int_fmt", b"%lld\0"
+        )
+        self.print_text_fmt = self.make_string(
+            "print_text_fmt", b"%s\0"
+        )
+        self.print_newline = self.make_string(
+            "print_newline", b"\n\0"
+        )
+
+        self.string_counter = 0
+
         self.true_string = self.make_string(
             "true_string",
             b"true\0"
@@ -2763,6 +2911,9 @@ class CodeGen:
 
     def visit_program(self, node):
         self.current_program = node
+        self.struct_nodes = {
+            struct.name: struct for struct in node.structs
+        }
         self.create_struct_types(node)
         self.create_function_declarations(node)
         self.create_member_function_declarations(node)
@@ -3084,6 +3235,79 @@ class CodeGen:
             value,
             pointer
         )
+
+    def visit_read(self, node):
+        pointer = self.builder.alloca(I32, name="read_value")
+        self.builder.call(
+            self.scanf,
+            [self.string_pointer(self.read_fmt), pointer]
+        )
+        return self.builder.load(pointer, name="read_result")
+
+    def visit_string(self, node):
+        self.string_counter += 1
+        global_string = self.make_string(
+            f"user_string_{self.string_counter}",
+            node.value.encode("utf-8") + b"\0"
+        )
+        return self.string_pointer(global_string)
+
+    def print_text(self, text):
+        self.builder.call(
+            self.printf,
+            [self.string_pointer(self.print_text_fmt), text]
+        )
+
+    def print_literal(self, text):
+        self.string_counter += 1
+        global_string = self.make_string(
+            f"print_literal_{self.string_counter}",
+            text.encode("utf-8") + b"\0"
+        )
+        self.print_text(self.string_pointer(global_string))
+
+    def print_value(self, value, type_name):
+        if type_name in ("i32", "i64"):
+            value = self.coerce(value, type_name, "i64")
+            self.builder.call(
+                self.printf,
+                [self.string_pointer(self.print_int_fmt), value]
+            )
+            return
+
+        if type_name == "bool":
+            text = self.builder.select(
+                value,
+                self.string_pointer(self.true_string),
+                self.string_pointer(self.false_string)
+            )
+            self.print_text(text)
+            return
+
+        if type_name == "string":
+            self.print_text(value)
+            return
+
+        struct = self.struct_nodes[type_name]
+        self.print_literal(f"{type_name}{{")
+
+        for index, field in enumerate(struct.fields):
+            if index:
+                self.print_literal(", ")
+
+            self.print_literal(f"{field.name}: ")
+
+            field_value = self.builder.extract_value(
+                value, index
+            )
+            self.print_value(field_value, field.type_name)
+
+        self.print_literal("}")
+
+    def visit_print(self, node):
+        value = node.value.accept(self)
+        self.print_value(value, node.value.type)
+        self.print_text(self.string_pointer(self.print_newline))
 
     def visit_exit(self, node):
         value = node.value.accept(self)
@@ -3552,6 +3776,18 @@ class AstPrinter:
         self.indent += 2
         node.left.accept(self)
         node.right.accept(self)
+        self.indent -= 2
+
+    def visit_read(self, node):
+        self.write("Read")
+
+    def visit_string(self, node):
+        self.write(f"String {node.value!r}")
+
+    def visit_print(self, node):
+        self.write("Print")
+        self.indent += 2
+        node.value.accept(self)
         self.indent -= 2
 
     def visit_call(self, node):
