@@ -1,0 +1,83 @@
+AI USAGE — PRACTICE 7
+=====================
+
+AI Tool: ChatGPT (OpenAI)
+
+TASK 1 — BUILT-IN INPUT AND OUTPUT
+----------------------------------
+
+I used ChatGPT to help implement the built-in read() and print()
+operations in my compiler.
+
+AI helped with:
+- Extending the parser to recognize the built-in operations.
+- Adding semantic checks for their arguments and types.
+- Generating LLVM IR for input and output operations.
+- Understanding how the built-ins interact with the existing
+  compiler architecture.
+
+I reviewed the suggested changes and tested the implementation
+using valid and invalid programs.
+
+
+TASK 2 — SEMANTIC CHECKS AND CODE GENERATION
+---------------------------------------------
+
+I used ChatGPT to help debug and verify the compiler changes.
+
+AI helped with:
+- Checking that invalid programs produce compilation errors.
+- Identifying issues in parsing and semantic validation.
+- Explaining the LLVM IR generation process.
+- Preparing additional test cases for the new functionality.
+
+I checked the compiler output and verified that the existing
+functionality continued to work.
+
+
+BONUS — A CALL IN THE MIDDLE OF A CHAIN
+---------------------------------------
+
+I used ChatGPT to help implement chained field access and method
+calls on temporary struct values.
+
+AI helped with:
+- Adding ResultFieldNode to the AST.
+- Extending the parser with postfix expressions.
+- Implementing semantic checks for fields of returned structs.
+- Generating LLVM IR for field access on temporary values.
+- Supporting method calls on temporary struct copies.
+- Updating grammar.ebnf to describe chained expressions.
+
+I tested expressions such as:
+- c.getPoint().x
+- c.getPoint().d2()
+- c.getOuter().inner.d2()
+- c.getPoint().shift(10)
+- makePoint().x
+
+I also verified that mutating methods modify only temporary
+copies and do not change the original struct.
+
+Invalid assignments to temporary fields and mutating method
+calls on constant objects were also tested.
+
+
+TESTING AND VERIFICATION
+------------------------
+
+I used ChatGPT to help prepare valid and invalid test programs
+and interpret compiler errors.
+
+I ran the tests locally and checked the generated LLVM IR
+by executing the programs with lli.
+
+The final test suite contained:
+
+79 program tests, 0 failures
+
+I also manually tested additional chained expressions and
+temporary struct mutation.
+
+All AI-generated suggestions were reviewed and verified
+through compilation and testing before being accepted.
