@@ -1,18 +1,51 @@
 program ::= { struct } { fn } { statement } exit
-struct ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+
+struct ::= "struct" ident NL "{" NL { field_decl | fn } "}" NL
 field_decl ::= type [ "mut" ] ident NL
+
 fn ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
-statement ::= decl | assign | if
+
+statement ::= decl | assign | if | print
+
 decl ::= type [ "mut" ] ident "{" [ initializer { "," initializer } ] "}"
 initializer ::= expr | "{" [ initializer { "," initializer } ] "}"
+
 type ::= "i32" | "i64" | "bool" | ident
+
 assign ::= ident { "." ident } ":=" expr
+
 if ::= "if" expr NL block [ "else" NL block ]
+
 block ::= "{" NL { statement } [ exit NL ] "}" NL
+
 exit ::= "exit" factor
+
+print ::= "print" "(" ( string | expr ) ")"
+read ::= "read" "(" ")"
+
 expr ::= arith [ ("==" | "!=") arith ]
 arith ::= term { ("+" | "-") term }
 term ::= factor { "*" factor }
+
 field ::= ident "." ident { "." ident }
 call ::= ident "(" [ expr { "," expr } ] ")"
-factor ::= number | "true" | "false" | ident | field | call | "!" factor
+member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
+
+factor ::= number
+         | "true"
+         | "false"
+         | ident
+         | field
+         | call
+         | member_call
+         | read
+         | "!" factor
+
+string ::= '"' { string_char } '"'
+
+ident ::= identifier_except_reserved_words
+
+reserved_words ::= "struct" | "fn" | "mut" | "exit"
+                 | "if" | "else" | "true" | "false"
+                 | "i32" | "i64" | "bool"
+                 | "read" | "print"
