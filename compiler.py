@@ -39,9 +39,10 @@ class StmtNode:
     pass
 
 class StructNode:
-    def __init__(self, name, fields, line, column):
+    def __init__(self, name, fields, line, column, methods=None):
         self.name = name
         self.fields = fields
+        self.methods = methods if methods is not None else []
         self.line = line
         self.column = column
 
@@ -102,6 +103,19 @@ class FunctionNode:
 
     def accept(self, visitor):
         return visitor.visit_function(self)
+
+
+class MemberCallNode:
+    def __init__(self, obj, name, arguments, line, column):
+        self.obj = obj
+        self.name = name
+        self.arguments = arguments
+        self.line = line
+        self.column = column
+        self.type = None
+
+    def accept(self, visitor):
+        return visitor.visit_member_call(self)
 
 
 class DeclNode(StmtNode):
@@ -765,6 +779,53 @@ class Parser:
                     field = self.eat(kind="identifier")
                     fields.append(field.text)
 
+                if (
+                    self.peek() is not None
+                    and self.peek().text == "("
+                ):
+                    self.eat(text="(")
+                    arguments = []
+
+                    if (
+                        self.peek() is not None
+                        and self.peek().text != ")"
+                    ):
+                        while True:
+                            arguments.append(self.parse_expr())
+
+                            if (
+                                self.peek() is not None
+                                and self.peek().text == ","
+                            ):
+                                self.eat(text=",")
+                                continue
+
+                            break
+
+                    self.eat(text=")")
+
+                    if len(fields) == 1:
+                        obj = VarNode(
+                            token.text,
+                            token.line,
+                            token.column
+                        )
+                    else:
+                        obj = FieldAccessNode(
+                            token.text,
+                            fields[:-1],
+                            token.line,
+                            token.column
+                        )
+
+                    return MemberCallNode(
+                        obj,
+                        fields[-1],
+                        arguments,
+                        token.line,
+                        token.column
+                    )
+
                 return FieldAccessNode(
                     token.text,
                     fields,
@@ -1174,6 +1235,7 @@ class Parser:
         self.ensure_end()
 
         fields = []
+        methods = []
 
         while True:
             if not self.next_line():
@@ -1200,7 +1262,39 @@ class Parser:
                     name_token.text,
                     fields,
                     struct_token.line,
-                    struct_token.column
+                    struct_token.column,
+                    methods
+                )
+
+            if first.text == "fn":
+                if not fields:
+                    error_at(
+                        first,
+                        "member function requires at least one field"
+                    )
+
+                method = self.parse_function()
+
+                if any(field.name == method.name for field in fields):
+                    raise CompileError(
+                        f"line {method.line}:{method.column}: "
+                        f"member function '{method.name}' "
+                        "has the same name as a field"
+                    )
+
+                if any(existing.name == method.name for existing in methods):
+                    raise CompileError(
+                        f"line {method.line}:{method.column}: "
+                        f"duplicate member function '{method.name}'"
+                    )
+
+                methods.append(method)
+                continue
+
+            if methods:
+                error_at(
+                    first,
+                    "field cannot appear after a member function"
                 )
 
             type_token = self.eat()
@@ -1471,6 +1565,7 @@ class SemanticChecker:
         self.structs = {}
         self.functions = {}
         self.current_function = None
+        self.current_struct = None
 
     def current_scope(self):
         return self.scopes[-1]
@@ -1479,6 +1574,11 @@ class SemanticChecker:
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
+
+        if self.current_struct is not None:
+            for field in self.current_struct.fields:
+                if field.name == name:
+                    return field
 
         return None
 
@@ -1506,6 +1606,10 @@ class SemanticChecker:
 
         for function in node.functions:
             function.accept(self)
+
+        for struct in node.structs:
+            for method in struct.methods:
+                self.check_member_function(struct, method)
 
         for statement in node.statements:
             statement.accept(self)
@@ -1548,6 +1652,43 @@ class SemanticChecker:
             fields[field.name] = field
 
         self.structs[node.name] = node
+
+        method_names = set()
+
+        for method in node.methods:
+            if method.name in fields:
+                raise CompileError(
+                    f"line {method.line}:{method.column}: "
+                    f"member function '{method.name}' "
+                    "has the same name as a field"
+                )
+
+            if method.name in method_names:
+                raise CompileError(
+                    f"line {method.line}:{method.column}: "
+                    f"duplicate member function '{method.name}'"
+                )
+
+            method_names.add(method.name)
+
+            if (
+                method.return_type not in ("i32", "i64", "bool")
+                and method.return_type not in self.structs
+            ):
+                raise CompileError(
+                    f"line {method.line}:{method.column}: "
+                    f"unknown return type '{method.return_type}'"
+                )
+
+    def check_member_function(self, struct, method):
+        previous_struct = self.current_struct
+
+        self.current_struct = struct
+
+        try:
+            method.accept(self)
+        finally:
+            self.current_struct = previous_struct
 
     def visit_field_decl(self, node):
         pass
@@ -1937,6 +2078,66 @@ class SemanticChecker:
         node.type = "bool"
         return node.type
 
+    def visit_member_call(self, node):
+        object_type = node.obj.accept(self)
+
+        struct = self.structs.get(object_type)
+
+        if struct is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"type '{object_type}' has no member functions"
+            )
+
+        method = next(
+            (
+                method
+                for method in struct.methods
+                if method.name == node.name
+            ),
+            None
+        )
+
+        if method is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"struct '{object_type}' has no member function "
+                f"'{node.name}'"
+            )
+
+        if len(node.arguments) != len(method.parameters):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"member function '{node.name}' expects "
+                f"{len(method.parameters)} arguments, "
+                f"got {len(node.arguments)}"
+            )
+
+        for argument, parameter in zip(
+            node.arguments,
+            method.parameters
+        ):
+            argument.accept(self)
+
+            if isinstance(argument, ConstNode):
+                self.check_constant_for_target(
+                    argument,
+                    parameter.type_name
+                )
+
+            self.check_assignable(
+                argument,
+                parameter.type_name,
+                argument.line,
+                argument.column,
+                f"pass argument to '{node.name}'"
+            )
+
+        node.method = method
+        node.type = method.return_type
+
+        return node.type
+
     def visit_call(self, node):
         function = self.functions.get(node.name)
 
@@ -2212,6 +2413,33 @@ class CodeGen:
                 name=f"user_{function.name}"
             )
 
+    def create_member_function_declarations(self, node):
+        for struct in node.structs:
+            struct_type = self.llvm_type(struct.name)
+
+            for method in struct.methods:
+                parameter_types = [
+                    struct_type.as_pointer()
+                ]
+
+                parameter_types.extend(
+                    self.llvm_type(parameter.type_name)
+                    for parameter in method.parameters
+                )
+
+                function_type = ir.FunctionType(
+                    self.llvm_type(method.return_type),
+                    parameter_types
+                )
+
+                method.ir_function = ir.Function(
+                    self.module,
+                    function_type,
+                    name=f"{struct.name}_{method.name}"
+                )
+
+                method.owner_struct = struct
+
     def string_pointer(self, global_string):
         zero = ir.Constant(I32, 0)
 
@@ -2284,9 +2512,14 @@ class CodeGen:
         self.current_program = node
         self.create_struct_types(node)
         self.create_function_declarations(node)
+        self.create_member_function_declarations(node)
 
         for function in node.functions:
             function.accept(self)
+
+        for struct in node.structs:
+            for method in struct.methods:
+                self.visit_member_function(struct, method)
 
         self.allocate_declarations(node)
 
@@ -2297,6 +2530,57 @@ class CodeGen:
             node.exit.accept(self)
 
         return str(self.module)
+
+    def visit_member_function(self, struct, method):
+        previous_builder = self.builder
+        previous_function = getattr(
+            self,
+            "current_function",
+            None
+        )
+        previous_struct = getattr(
+            self,
+            "current_struct",
+            None
+        )
+        previous_this = getattr(
+            self,
+            "this_ptr",
+            None
+        )
+
+        self.current_function = method
+        self.current_struct = struct
+
+        entry = method.ir_function.append_basic_block("entry")
+        self.builder = ir.IRBuilder(entry)
+
+        self.this_ptr = method.ir_function.args[0]
+        self.this_ptr.name = "this"
+
+        for parameter, argument in zip(
+            method.parameters,
+            method.ir_function.args[1:]
+        ):
+            argument.name = parameter.name
+
+            parameter.ir_ptr = self.builder.alloca(
+                self.llvm_type(parameter.type_name),
+                name=f"{parameter.name}_slot"
+            )
+
+            self.builder.store(
+                argument,
+                parameter.ir_ptr
+            )
+
+        self.allocate_declarations(method.body)
+        method.body.accept(self)
+
+        self.this_ptr = previous_this
+        self.current_struct = previous_struct
+        self.current_function = previous_function
+        self.builder = previous_builder
 
     def visit_function(self, node):
         previous_builder = self.builder
@@ -2692,6 +2976,72 @@ class CodeGen:
             name="nottmp"
         )
 
+    def visit_member_call(self, node):
+        obj = node.obj
+
+        if isinstance(obj, VarNode):
+            if isinstance(obj.decl, FieldDeclNode):
+                pointer = self.builder.gep(
+                    self.this_ptr,
+                    [
+                        ir.Constant(I32, 0),
+                        ir.Constant(I32, obj.decl.index)
+                    ],
+                    inbounds=True
+                )
+            else:
+                pointer = obj.decl.ir_ptr
+
+        elif isinstance(obj, FieldAccessNode):
+            if isinstance(obj.decl, FieldDeclNode):
+                pointer = self.builder.gep(
+                    self.this_ptr,
+                    [
+                        ir.Constant(I32, 0),
+                        ir.Constant(I32, obj.decl.index)
+                    ],
+                    inbounds=True
+                )
+            else:
+                pointer = obj.decl.ir_ptr
+
+            for field in obj.resolved_fields:
+                pointer = self.builder.gep(
+                    pointer,
+                    [
+                        ir.Constant(I32, 0),
+                        ir.Constant(I32, field.index)
+                    ],
+                    inbounds=True
+                )
+
+        else:
+            raise RuntimeError(
+                "unsupported member call receiver"
+            )
+
+        arguments = [pointer]
+
+        for argument, parameter in zip(
+            node.arguments,
+            node.method.parameters
+        ):
+            value = argument.accept(self)
+
+            value = self.coerce(
+                value,
+                argument.type,
+                parameter.type_name
+            )
+
+            arguments.append(value)
+
+        return self.builder.call(
+            node.method.ir_function,
+            arguments,
+            name=f"call_{node.name}"
+        )
+
     def visit_call(self, node):
         arguments = []
 
@@ -2716,6 +3066,21 @@ class CodeGen:
         )
 
     def visit_var(self, node):
+        if isinstance(node.decl, FieldDeclNode):
+            pointer = self.builder.gep(
+                self.this_ptr,
+                [
+                    ir.Constant(I32, 0),
+                    ir.Constant(I32, node.decl.index)
+                ],
+                inbounds=True
+            )
+
+            return self.builder.load(
+                pointer,
+                name=f"load_{node.name}"
+            )
+
         return self.builder.load(
             node.decl.ir_ptr,
             name=f"load_{node.name}"
@@ -2783,6 +3148,18 @@ class AstPrinter:
 
         for field in node.fields:
             field.accept(self)
+
+        for method in node.methods:
+            self.write(
+                f"MemberFn {method.name} -> {method.return_type}"
+            )
+            self.indent += 2
+
+            for parameter in method.parameters:
+                parameter.accept(self)
+
+            method.body.accept(self)
+            self.indent -= 2
 
         self.indent -= 2
 
@@ -2865,12 +3242,12 @@ class AstPrinter:
 
     def visit_struct_init(self, node):
         self.write("StructInit")
-        self.indent += 1
+        self.indent += 2
 
         for value in node.values:
             value.accept(self)
 
-        self.indent -= 1
+        self.indent -= 2
 
     def visit_binop(self, node):
         self.write(
@@ -2885,6 +3262,17 @@ class AstPrinter:
     def visit_call(self, node):
         self.write(f"Call {node.name}")
         self.indent += 2
+
+        for argument in node.arguments:
+            argument.accept(self)
+
+        self.indent -= 2
+
+    def visit_member_call(self, node):
+        self.write(f"MemberCall {node.name}")
+        self.indent += 2
+
+        node.obj.accept(self)
 
         for argument in node.arguments:
             argument.accept(self)
