@@ -1616,6 +1616,204 @@ class SemanticChecker:
 
         node.exit.accept(self)
 
+        self.analyze_member_mutability(node)
+
+    def analyze_member_mutability(self, program):
+        methods = []
+
+        for struct in program.structs:
+            for method in struct.methods:
+                method.is_mutating = False
+                methods.append(method)
+
+        def expressions(node):
+            if node is None:
+                return
+
+            if isinstance(node, AssignNode):
+                yield from expressions(node.value)
+                return
+
+            if isinstance(node, DeclNode):
+                for value in node.init_values:
+                    yield from expressions(value)
+                return
+
+            if isinstance(node, BlockNode):
+                for statement in node.statements:
+                    yield from expressions(statement)
+                yield from expressions(node.exit)
+                return
+
+            if isinstance(node, IfNode):
+                yield from expressions(node.condition)
+                yield from expressions(node.then_block)
+                yield from expressions(node.else_block)
+                return
+
+            if isinstance(node, ExitNode):
+                yield from expressions(node.value)
+                return
+
+            if isinstance(node, BinOpNode):
+                yield from expressions(node.left)
+                yield from expressions(node.right)
+                return
+
+            if isinstance(node, NotNode):
+                yield from expressions(node.value)
+                return
+
+            if isinstance(node, StructInitNode):
+                for value in node.values:
+                    yield from expressions(value)
+                return
+
+            if isinstance(node, (CallNode, MemberCallNode)):
+                yield node
+                for argument in node.arguments:
+                    yield from expressions(argument)
+
+        for struct in program.structs:
+            for method in struct.methods:
+                method.directly_mutating = False
+                method.member_dependencies = []
+
+                def scan(node):
+                    if isinstance(node, AssignNode):
+                        if isinstance(node.decl, FieldDeclNode):
+                            method.directly_mutating = True
+
+                        scan(node.value)
+                        return
+
+                    if isinstance(node, BlockNode):
+                        for statement in node.statements:
+                            scan(statement)
+                        scan(node.exit)
+                        return
+
+                    if isinstance(node, IfNode):
+                        scan(node.then_block)
+                        scan(node.else_block)
+                        return
+
+                    for call in expressions(node):
+                        if isinstance(call, CallNode):
+                            dependency = getattr(
+                                call, "member_method", None
+                            )
+                            if dependency is not None:
+                                method.member_dependencies.append(
+                                    dependency
+                                )
+
+                        if isinstance(call, MemberCallNode):
+                            receiver = call.obj
+
+                            if isinstance(receiver.decl, FieldDeclNode):
+                                method.member_dependencies.append(
+                                    call.method
+                                )
+
+                scan(method.body)
+                method.is_mutating = method.directly_mutating
+
+        changed = True
+
+        while changed:
+            changed = False
+
+            for method in methods:
+                if method.is_mutating:
+                    continue
+
+                if any(
+                    dependency.is_mutating
+                    for dependency in method.member_dependencies
+                ):
+                    method.is_mutating = True
+                    changed = True
+
+        def check_calls(node):
+            if node is None:
+                return
+
+            if isinstance(node, MemberCallNode):
+                if node.method.is_mutating:
+                    receiver = node.obj
+
+                    if not receiver.decl.mutable:
+                        raise CompileError(
+                            f"line {node.line}:{node.column}: "
+                            f"cannot call mutating member function "
+                            f"'{node.name}' on const object"
+                        )
+
+                    if isinstance(receiver, FieldAccessNode):
+                        for field in receiver.resolved_fields:
+                            if not field.mutable:
+                                raise CompileError(
+                                    f"line {node.line}:{node.column}: "
+                                    "cannot call mutating member function "
+                                    f"'{node.name}' through const field"
+                                )
+
+            if isinstance(node, BlockNode):
+                for statement in node.statements:
+                    check_calls(statement)
+                check_calls(node.exit)
+                return
+
+            if isinstance(node, IfNode):
+                check_calls(node.condition)
+                check_calls(node.then_block)
+                check_calls(node.else_block)
+                return
+
+            if isinstance(node, DeclNode):
+                for value in node.init_values:
+                    check_calls(value)
+                return
+
+            if isinstance(node, AssignNode):
+                check_calls(node.value)
+                return
+
+            if isinstance(node, ExitNode):
+                check_calls(node.value)
+                return
+
+            if isinstance(node, BinOpNode):
+                check_calls(node.left)
+                check_calls(node.right)
+                return
+
+            if isinstance(node, NotNode):
+                check_calls(node.value)
+                return
+
+            if isinstance(node, StructInitNode):
+                for value in node.values:
+                    check_calls(value)
+                return
+
+            if isinstance(node, (CallNode, MemberCallNode)):
+                for argument in node.arguments:
+                    check_calls(argument)
+
+        for struct in program.structs:
+            for method in struct.methods:
+                check_calls(method.body)
+
+        for function in program.functions:
+            check_calls(function.body)
+
+        for statement in program.statements:
+            check_calls(statement)
+
+        check_calls(program.exit)
+
     def visit_struct(self, node):
         if node.name in self.structs:
             raise CompileError(
@@ -1928,6 +2126,11 @@ class SemanticChecker:
 
         node.decl = declaration
 
+        if isinstance(declaration, FieldDeclNode):
+            node.is_member_field = True
+        else:
+            node.is_member_field = False
+
         if node.fields:
             current_type = declaration.type_name
             node.resolved_fields = []
@@ -2139,6 +2342,56 @@ class SemanticChecker:
         return node.type
 
     def visit_call(self, node):
+        if self.current_struct is not None:
+            method = next(
+                (
+                    method
+                    for method in self.current_struct.methods
+                    if method.name == node.name
+                ),
+                None
+            )
+
+            if method is not None:
+                receiver = VarNode(
+                    node.name,
+                    node.line,
+                    node.column
+                )
+                member_call = MemberCallNode(
+                    receiver,
+                    node.name,
+                    node.arguments,
+                    node.line,
+                    node.column
+                )
+                member_call.method = method
+                node.member_method = method
+
+                if len(node.arguments) != len(method.parameters):
+                    raise CompileError(
+                        f"line {node.line}:{node.column}: "
+                        f"member function '{node.name}' expects "
+                        f"{len(method.parameters)} arguments, "
+                        f"got {len(node.arguments)}"
+                    )
+
+                for argument, parameter in zip(
+                    node.arguments,
+                    method.parameters
+                ):
+                    argument.accept(self)
+                    self.check_assignable(
+                        argument,
+                        parameter.type_name,
+                        argument.line,
+                        argument.column,
+                        f"pass argument to '{node.name}'"
+                    )
+
+                node.type = method.return_type
+                return node.type
+
         function = self.functions.get(node.name)
 
         if function is None:
@@ -2802,7 +3055,18 @@ class CodeGen:
             target_type
         )
 
-        pointer = node.decl.ir_ptr
+        if isinstance(node.decl, FieldDeclNode):
+            pointer = self.builder.gep(
+                self.this_ptr,
+                [
+                    ir.Constant(I32, 0),
+                    ir.Constant(I32, node.decl.index)
+                ],
+                inbounds=True,
+                name=f"this_{node.name}_ptr"
+            )
+        else:
+            pointer = node.decl.ir_ptr
 
         if node.fields:
             for field in node.resolved_fields:
@@ -3043,6 +3307,27 @@ class CodeGen:
         )
 
     def visit_call(self, node):
+        if hasattr(node, "member_method"):
+            arguments = [self.this_ptr]
+
+            for argument, parameter in zip(
+                node.arguments,
+                node.member_method.parameters
+            ):
+                value = argument.accept(self)
+                value = self.coerce(
+                    value,
+                    argument.type,
+                    parameter.type_name
+                )
+                arguments.append(value)
+
+            return self.builder.call(
+                node.member_method.ir_function,
+                arguments,
+                name=f"call_{node.name}"
+            )
+
         arguments = []
 
         for argument, parameter in zip(
@@ -3087,7 +3372,17 @@ class CodeGen:
         )
 
     def visit_field_access(self, node):
-        pointer = node.decl.ir_ptr
+        if isinstance(node.decl, FieldDeclNode):
+            pointer = self.builder.gep(
+                self.this_ptr,
+                [
+                    ir.Constant(I32, 0),
+                    ir.Constant(I32, node.decl.index)
+                ],
+                inbounds=True
+            )
+        else:
+            pointer = node.decl.ir_ptr
 
         for field in node.resolved_fields:
             pointer = self.builder.gep(
