@@ -1,0 +1,8 @@
+fn double := (i64 x) -> i64
+{
+i64 result{x * 2}
+exit result
+}
+i32 value{15}
+i64 result{double(value)}
+exit result

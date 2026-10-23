@@ -1,0 +1,14 @@
+struct A
+{
+i32 x
+}
+struct B
+{
+A a
+}
+struct C
+{
+B b
+}
+C c{{{42}}}
+exit c.b.a.x

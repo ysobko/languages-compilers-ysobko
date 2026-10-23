@@ -1,35 +1,63 @@
-Practice 5 AI Usage
+Practice 6 AI Usage
 
-I used ChatGPT while working on Practice 5.
+I used ChatGPT while working on Practice 6.
 
 Task 1:
-- ChatGPT helped me understand the required changes for if/else, multiline blocks, and the ! operator.
-- It suggested changes to the lexer so that ! and != are distinguished using one-byte lookahead and braces are handled as regular tokens.
-- It helped implement the parser changes for if statements and blocks, including nested blocks, optional else branches, and exit inside a block.
-- It helped add the If, Block, and Not AST nodes and their AST printer methods.
-- I tested the generated AST against the examples from the practice specification.
+- ChatGPT helped me understand the requirements for struct declarations, struct fields, struct initialization, and struct copying.
+- It helped extend the lexer and parser with the `struct` keyword, user-defined types, field declarations, and multiple initializer values.
+- It helped add the Struct and FieldDecl AST nodes and update declarations so that struct objects can contain multiple initialization values.
+- ChatGPT helped implement semantic checks for struct field types, initializer value count and types, and recursive mutability rules for whole-struct assignment.
+- It explained how structs should be represented in LLVM using named struct types, `alloca`, and `getelementptr`.
+- It suggested resolving field indices during semantic analysis so that LLVM code generation can use numeric field indices instead of looking up fields by name.
+- I tested simple structs, structs containing previously declared structs, struct copying, incorrect initializers, and the generated LLVM IR.
 
 Task 2:
-- ChatGPT explained the difference between semantic scopes and LLVM basic blocks.
-- It helped change the symbol table into a stack of scopes.
-- It suggested the implementation for entering and leaving block scopes and looking up variables from the innermost scope outward.
-- It helped implement shadowing, same-scope redeclaration checks, bool checking for if conditions, and bool checking for the ! operator.
-- It helped verify that Var and Assign nodes refer to the correct declaration through node.decl.
-- I tested scope lookup, shadowing, use after scope, redeclaration, and type errors.
+- ChatGPT helped implement function declarations, parameters, function calls, and function return types.
+- It helped add Function, Parameter, and Call AST nodes and the corresponding parser logic.
+- It explained why function signatures need to be collected before function bodies are checked, so that forward calls and recursion are supported.
+- It helped implement semantic checks for argument count, argument types, return types, and immutable function parameters.
+- It helped ensure that function bodies have their own scopes and cannot access top-level variables.
+- ChatGPT helped implement LLVM function declarations and bodies, including local slots for parameters and a `user_` prefix for generated function names.
+- While testing control flow inside functions, ChatGPT helped fix LLVM block generation so that `if` blocks are created in the current function instead of always using `main`.
+- I tested normal calls, functions without parameters, i32 to i64 argument widening, forward calls, recursion with Fibonacci, struct parameters, struct results, immutable parameters, and missing final exits.
 
 Task 3:
-- ChatGPT explained how if/else is represented with then, else, and merge LLVM basic blocks and conditional branches.
-- It helped implement LLVM code generation for If, Block, and Not nodes.
-- It helped ensure that a branch is not emitted after a block that already terminates with return.
-- The first implementation for entry-block allocas produced invalid LLVM because some instructions were inserted after a terminator. ChatGPT helped diagnose this from the generated IR.
-- We changed the implementation to first traverse the AST and allocate all declaration slots in the entry block before generating executable instructions.
-- ChatGPT helped test nested if statements, shadowing, exit inside a branch, if without else, integer widening inside a branch, and assignments in both branches.
-- It also helped verify the generated IR with LLVM mem2reg. The optimized IR contained a phi instruction for a variable assigned in both branches.
+- ChatGPT helped implement field access such as `p.x` and nested field access such as `c.center.x`.
+- It helped add the FieldAccess AST node and extend the lexer with the `.` punctuation.
+- It helped implement semantic resolution of field chains. Each field is resolved during semantic analysis and its field index is stored for later LLVM generation.
+- It helped generate nested field access with `getelementptr` instructions using the previously resolved field indices.
+- ChatGPT helped extend assignment to support field targets such as `p.x := 25` and nested targets such as `box.topLeft.x := 99`.
+- It helped implement the mutability checks required for field assignment, including rejecting writes through a constant field in a nested chain.
+- It helped enforce the required top-level program order: structs first, then functions, then statements, followed by the final exit.
+- We checked the final grammar requirement that `exit` takes a factor and adjusted the parser accordingly.
+- While testing `--ast`, we found that AstPrinter did not yet support FieldAccess. ChatGPT helped add the missing visitor method, after which nested field access was printed correctly.
+- I also updated grammar.ebnf to describe the Practice 6 syntax implemented by the compiler.
 
 Testing:
-- ChatGPT helped design additional positive and negative tests for Practice 5.
-- The tests cover if/else, nested if, shadowing with different types, ! together with !=, if without else, assignments in both branches, integer widening, exit inside a nested branch, non-bool conditions, ! on an integer, use after scope, same-scope redeclaration, incorrect assignment to a shadowed variable, incorrect brace placement, empty blocks, and statements after exit.
-- ChatGPT also helped create AST snapshot tests for the new If, Block, and Not nodes.
-- I ran the complete test suite and checked the results myself.
+- ChatGPT helped create the six required positive tests for nested field chains, field writes, struct parameters, struct results, nested function calls, and i32 to i64 function arguments.
+- It also helped create the six required negative tests for unknown fields, wrong struct initializer value count, writing through a constant field, wrong function argument count, wrong function return type, and a function declared after a statement.
+- I ran each new error case and used the compiler's actual line and column in the expected output instead of assuming the error location.
+- I tested the function example and the complete struct/function example from the Practice 6 specification.
+- I ran the complete regression suite after the changes. All 60 program tests passed with 0 failures.
+- I also checked `--tokens` and `--ast`, executed generated LLVM IR with `lli`, and inspected the generated IR for named struct types, `getelementptr`, user function definitions, and function calls.
+- I ran `git diff --check` to check the final changes for whitespace errors.
 
-I reviewed the suggested code, ran the compiler and LLVM tools locally, inspected the generated AST and LLVM IR, and verified the behavior with the test suite.
+I reviewed the suggested code, applied the changes incrementally, ran the compiler and LLVM tools locally, inspected the generated AST and LLVM IR, and verified the final implementation with the complete test suite.
+
+Additional Task — Nested Struct Initialisation
+
+ChatGPT was used to help implement and test the additional nested struct initialisation task.
+
+It helped with:
+- adding a StructInitNode to represent nested brace initialisers in the AST;
+- extending declaration parsing with recursive initialiser parsing;
+- implementing recursive semantic checking based on the expected struct field type;
+- preserving existing whole-struct copy initialisation;
+- reporting errors at the opening nested brace for invalid nested initialisers;
+- generating nested LLVM struct values using insertvalue;
+- supporting recursively nested initialisers such as C c{{{42}}};
+- adding tests for valid nested initialisation, recursive nesting, built-in field errors, and incorrect nested value counts;
+- updating the grammar to describe recursive initialisers;
+- checking AST output for the new StructInitNode.
+
+The implementation was applied incrementally and tested after each change. The complete test suite was rerun to verify that the additional task did not break the existing Practice 6 functionality.

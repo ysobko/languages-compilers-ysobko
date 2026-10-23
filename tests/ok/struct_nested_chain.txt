@@ -1,0 +1,14 @@
+struct Point
+{
+i32 x
+i32 y
+}
+struct Circle
+{
+Point center
+i32 radius
+}
+Point p{10, 20}
+Circle c{p, 5}
+i32 result{c.center.x}
+exit result

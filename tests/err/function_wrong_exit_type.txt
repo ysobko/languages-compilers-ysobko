@@ -1,0 +1,6 @@
+fn isReady := () -> bool
+{
+i32 value{10}
+exit value
+}
+exit 0
