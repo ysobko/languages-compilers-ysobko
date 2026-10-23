@@ -84,14 +84,51 @@ Therefore, the output is `15`, even though `k` is changed later.
 Capture rules:
 
 - `[]` means no captured variables.
-- `[x]` captures the current value of `x`.
-- Captures are immutable inside the lambda.
+- `[x]` captures the current value of `x` as immutable.
+- `[mut x]` captures the current value of `x` as mutable.
+- Mutable captures preserve their modified values between calls.
+- Changing a captured variable does not change the original variable.
+- Mixed captures such as `[x, mut y]` are supported.
+- A lambda with mutable captures is stored as a mutable object.
 - Local variables must be explicitly captured to be used inside the lambda.
 - Global functions can be called without capturing them.
 - A lambda can capture another lambda.
 - Lambdas can be declared inside functions and loops.
 - Recursive lambda calls are not supported.
 - Lambdas cannot be passed as function arguments or returned through `exit`.
+
+### Mutable Captures (Bonus)
+
+A lambda can modify a captured variable by using `mut` in its capture list.
+
+Example:
+
+```text
+i32 mut x{10}
+
+fn counter := [mut x]() -> i32
+{
+    x := x + 1
+    exit x
+}
+
+print(counter())
+print(counter())
+print(x)
+
+exit 0
+```
+
+Output:
+
+```text
+11
+12
+10
+Program exit with result 0
+```
+
+The lambda keeps its own copy of `x`. Its value changes between calls, but the original `x` remains `10`.
 
 ## While Loops
 

@@ -1654,8 +1654,14 @@ class Parser:
 
         if self.peek() is not None and self.peek().text != "]":
             while True:
+                mutable = False
+
+                if self.peek() is not None and self.peek().text == "mut":
+                    self.eat(text="mut")
+                    mutable = True
+
                 capture = self.eat(kind="identifier")
-                captures.append(capture.text)
+                captures.append((capture.text, mutable))
 
                 if self.peek() is not None and self.peek().text == ",":
                     self.eat(text=",")
@@ -2305,7 +2311,7 @@ class SemanticChecker:
         values = []
         seen = set()
 
-        for name in node.captures:
+        for name, mutable in node.captures:
             if name in seen:
                 raise CompileError(
                     f"line {node.line}:{node.column}: "
@@ -2325,7 +2331,7 @@ class SemanticChecker:
                 FieldDeclNode(
                     name,
                     declaration.type_name,
-                    False,
+                    mutable,
                     node.line,
                     node.column
                 )
@@ -2361,7 +2367,7 @@ class SemanticChecker:
         declaration = DeclNode(
             node.name,
             struct_name,
-            False,
+            any(mutable for _, mutable in node.captures),
             values,
             node.line,
             node.column
@@ -4259,8 +4265,13 @@ class AstPrinter:
         )
         self.indent += 2
 
+        captures = [
+            f"mut {name}" if mutable else name
+            for name, mutable in node.captures
+        ]
+
         self.write(
-            f"Captures: {', '.join(node.captures)}"
+            f"Captures: {', '.join(captures)}"
         )
 
         for parameter in node.parameters:

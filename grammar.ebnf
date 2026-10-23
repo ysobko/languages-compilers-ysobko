@@ -18,8 +18,10 @@ if ::= "if" expr NL block [ "else" NL block ]
 
 while ::= "while" expr NL block
 
-lambda ::= "fn" ident ":=" "[" [ ident { "," ident } ] "]"
+lambda ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
            "(" [ type ident { "," type ident } ] ")" "->" type NL block
+
+capture ::= [ "mut" ] ident
 
 block ::= "{" NL { statement } [ exit NL ] "}" NL
 

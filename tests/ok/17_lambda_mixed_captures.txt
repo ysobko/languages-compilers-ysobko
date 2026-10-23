@@ -1,0 +1,15 @@
+i32 mut x{10}
+i32 mut y{20}
+
+fn calculate := [x, mut y]() -> i32
+{
+    y := y + x
+    exit y
+}
+
+print(calculate())
+print(calculate())
+print(x)
+print(y)
+
+exit 0
