@@ -1,0 +1,2 @@
+i32 number{read(10)}
+exit 0

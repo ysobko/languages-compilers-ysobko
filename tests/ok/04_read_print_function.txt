@@ -1,0 +1,14 @@
+fn addInput := (i32 base) -> i32
+{
+    i32 input{read()}
+    i32 result{base + input}
+    print("Function result:")
+    print(result)
+    exit result
+}
+
+i32 total{addInput(10)}
+print("Returned value:")
+print(total)
+
+exit 0

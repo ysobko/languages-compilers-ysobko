@@ -1,0 +1,2 @@
+i32 message{"Hello"}
+exit 0

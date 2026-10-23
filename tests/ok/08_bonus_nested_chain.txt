@@ -1,0 +1,35 @@
+struct Point
+{
+    i32 x
+    i32 y
+
+    fn d2 := () -> i32
+    {
+        i32 result{x * x + y * y}
+        exit result
+    }
+}
+
+struct Outer
+{
+    Point inner
+}
+
+struct Container
+{
+    Outer outer
+
+    fn getOuter := () -> Outer
+    {
+        exit outer
+    }
+}
+
+Point p{3, 4}
+Outer o{p}
+Container c{o}
+
+i32 result{c.getOuter().inner.d2()}
+print(result)
+
+exit result

@@ -30,10 +30,15 @@ def run_valid(source):
         if compile_result.returncode != 0:
             return False, compile_result.stderr.strip()
 
+        input_path = source.with_suffix(".input")
+        input_data = input_path.read_text() if input_path.exists() else ""
+
         run_result = subprocess.run(
             ["lli", output.name],
+            input=input_data,
             capture_output=True,
             text=True,
+            timeout=10,
         )
 
         actual = run_result.stdout.strip()

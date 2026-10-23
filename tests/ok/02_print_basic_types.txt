@@ -1,0 +1,12 @@
+i32 small{42}
+i64 large{8000000000}
+bool enabled{true}
+bool disabled{false}
+
+print("Hello, compiler!")
+print(small)
+print(large)
+print(enabled)
+print(disabled)
+
+exit 0
