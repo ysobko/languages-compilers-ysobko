@@ -115,6 +115,12 @@ class MemberCallNode:
         self.type = None
 
     def accept(self, visitor):
+        if (
+            hasattr(self, "callable_member")
+            and not isinstance(visitor, SemanticChecker)
+        ):
+            return self.callable_member.accept(visitor)
+
         return visitor.visit_member_call(self)
 
 
@@ -274,6 +280,12 @@ class CallNode(ExprNode):
         self.function = None
 
     def accept(self, visitor):
+        if (
+            hasattr(self, "callable_member")
+            and not isinstance(visitor, SemanticChecker)
+        ):
+            return self.callable_member.accept(visitor)
+
         return visitor.visit_call(self)
 
 
@@ -1823,9 +1835,12 @@ class SemanticChecker:
                 return
 
             if isinstance(node, (CallNode, MemberCallNode)):
-                yield node
-                for argument in node.arguments:
+                resolved = getattr(node, "callable_member", node)
+                yield resolved
+
+                for argument in resolved.arguments:
                     yield from expressions(argument)
+                return
 
         for struct in program.structs:
             for method in struct.methods:
@@ -1893,9 +1908,40 @@ class SemanticChecker:
             if node is None:
                 return
 
+            node = getattr(node, "callable_member", node)
+
             if isinstance(node, MemberCallNode):
                 if node.method.is_mutating:
                     receiver = node.obj
+
+                    current = receiver
+
+                    while isinstance(current, ResultFieldNode):
+                        if not current.resolved_field.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                "cannot call mutating member function "
+                                f"'{node.name}' through const field"
+                            )
+
+                        current = current.obj
+
+                    if isinstance(current, (VarNode, FieldAccessNode)):
+                        if not current.decl.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                "cannot call mutating member function "
+                                f"'{node.name}' on const object"
+                            )
+
+                        if isinstance(current, FieldAccessNode):
+                            for field in current.resolved_fields:
+                                if not field.mutable:
+                                    raise CompileError(
+                                        f"line {node.line}:{node.column}: "
+                                        "cannot call mutating member function "
+                                        f"'{node.name}' through const field"
+                                    )
 
                     if isinstance(receiver, (VarNode, FieldAccessNode)):
                         if not receiver.decl.mutable:
@@ -2512,6 +2558,37 @@ class SemanticChecker:
         )
 
         if method is None:
+            field = next(
+                (
+                    field
+                    for field in struct.fields
+                    if field.name == node.name
+                ),
+                None
+            )
+
+            if field is not None:
+                receiver = ResultFieldNode(
+                    node.obj,
+                    node.name,
+                    node.line,
+                    node.column
+                )
+
+                callable_call = MemberCallNode(
+                    receiver,
+                    "call",
+                    node.arguments,
+                    node.line,
+                    node.column
+                )
+
+                callable_call.accept(self)
+
+                node.callable_member = callable_call
+                node.type = callable_call.type
+                return node.type
+
             raise CompileError(
                 f"line {node.line}:{node.column}: "
                 f"struct '{object_type}' has no member function "
@@ -2551,7 +2628,84 @@ class SemanticChecker:
 
         return node.type
 
+    def resolve_callable_object(self, node):
+        declaration = self.lookup(node.name)
+
+        if declaration is None:
+            return None
+
+        if node.name in self.functions:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is both a variable and a function: "
+                "rename one of them"
+            )
+
+        object_type = declaration.type_name
+        struct = self.structs.get(object_type)
+
+        if struct is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is not callable: "
+                f"it is {object_type}"
+            )
+
+        method = next(
+            (
+                method
+                for method in struct.methods
+                if method.name == "call"
+            ),
+            None
+        )
+
+        if method is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is not callable: "
+                f"{object_type} has no member function 'call'"
+            )
+
+        receiver = VarNode(
+            node.name,
+            node.line,
+            node.column
+        )
+
+        member_call = MemberCallNode(
+            receiver,
+            "call",
+            node.arguments,
+            node.line,
+            node.column
+        )
+
+        try:
+            member_call.accept(self)
+        except CompileError as error:
+            message = str(error)
+            message = message.replace(
+                "member function 'call'",
+                f"callable object '{node.name}'"
+            )
+            message = message.replace(
+                "pass argument to 'call'",
+                f"pass argument to '{node.name}'"
+            )
+            raise CompileError(message) from None
+
+        node.callable_member = member_call
+        node.type = member_call.type
+
+        return node.type
+
     def visit_call(self, node):
+        callable_type = self.resolve_callable_object(node)
+
+        if callable_type is not None:
+            return callable_type
+
         if self.current_struct is not None:
             method = next(
                 (
