@@ -105,6 +105,29 @@ class FunctionNode:
         return visitor.visit_function(self)
 
 
+class LambdaNode(StmtNode):
+    def __init__(
+        self,
+        name,
+        captures,
+        parameters,
+        return_type,
+        body,
+        line,
+        column
+    ):
+        self.name = name
+        self.captures = captures
+        self.parameters = parameters
+        self.return_type = return_type
+        self.body = body
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_lambda(self)
+
+
 class MemberCallNode:
     def __init__(self, obj, name, arguments, line, column):
         self.obj = obj
@@ -509,6 +532,16 @@ def lex(data: bytes):
             elif b == ord("."):
                 tokens.append(
                     Token("punctuation", ".", line, col)
+                )
+
+            elif b == ord("["):
+                tokens.append(
+                    Token("punctuation", "[", line, col)
+                )
+
+            elif b == ord("]"):
+                tokens.append(
+                    Token("punctuation", "]", line, col)
                 )
 
             elif b == ord("("):
@@ -1579,6 +1612,96 @@ class Parser:
             fn_token.column
         )
 
+    def parse_lambda(self):
+        fn_token = self.eat(text="fn")
+        name_token = self.eat(kind="identifier")
+        self.eat(text=":=")
+        self.eat(text="[")
+
+        captures = []
+
+        if self.peek() is not None and self.peek().text != "]":
+            while True:
+                capture = self.eat(kind="identifier")
+                captures.append(capture.text)
+
+                if self.peek() is not None and self.peek().text == ",":
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text="]")
+        self.eat(text="(")
+
+        parameters = []
+
+        if self.peek() is not None and self.peek().text != ")":
+            while True:
+                type_token = self.peek()
+
+                if type_token is None:
+                    raise CompileError(
+                        f"line {name_token.line}:{self.end_column()}: "
+                        "expected parameter type"
+                    )
+
+                if (
+                    type_token.text not in ("i32", "i64", "bool")
+                    and type_token.kind != "identifier"
+                ):
+                    error_at(type_token, "expected parameter type")
+
+                self.eat()
+                param_token = self.eat(kind="identifier")
+
+                parameters.append(
+                    ParameterNode(
+                        param_token.text,
+                        type_token.text,
+                        param_token.line,
+                        param_token.column
+                    )
+                )
+
+                if self.peek() is not None and self.peek().text == ",":
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text=")")
+        self.eat(text="->")
+
+        return_type = self.peek()
+
+        if return_type is None:
+            raise CompileError(
+                f"line {name_token.line}:{self.end_column()}: "
+                "expected return type"
+            )
+
+        if (
+            return_type.text not in ("i32", "i64", "bool")
+            and return_type.kind != "identifier"
+        ):
+            error_at(return_type, "expected return type")
+
+        self.eat()
+        self.ensure_end()
+
+        body = self.parse_block()
+
+        return LambdaNode(
+            name_token.text,
+            captures,
+            parameters,
+            return_type.text,
+            body,
+            fn_token.line,
+            fn_token.column
+        )
+
     def parse_print(self):
         token = self.eat(text="print")
         self.eat(text="(")
@@ -1603,6 +1726,9 @@ class Parser:
 
     def parse_statement(self):
         token = self.peek()
+
+        if token.text == "fn":
+            return self.parse_lambda()
 
         if token.text == "print":
             return self.parse_print()
@@ -1679,6 +1805,18 @@ class Parser:
                 continue
 
             if first.text == "fn":
+                is_lambda = (
+                    len(self.tokens) > 3
+                    and self.tokens[3].text == "["
+                )
+
+                if is_lambda:
+                    phase = "statement"
+                    node = self.parse_lambda()
+                    self.ensure_end()
+                    statements.append(node)
+                    continue
+
                 if phase == "statement":
                     error_at(
                         first,
@@ -1727,6 +1865,8 @@ class SemanticChecker:
         self.functions = {}
         self.current_function = None
         self.current_struct = None
+        self.current_program = None
+        self.lambda_counter = 0
 
     def current_scope(self):
         return self.scopes[-1]
@@ -1744,6 +1884,8 @@ class SemanticChecker:
         return None
 
     def visit_program(self, node):
+        self.current_program = node
+
         for struct in node.structs:
             struct.accept(self)
 
@@ -1772,8 +1914,11 @@ class SemanticChecker:
             for method in struct.methods:
                 self.check_member_function(struct, method)
 
-        for statement in node.statements:
+        for index, statement in enumerate(node.statements):
             statement.accept(self)
+
+            if isinstance(statement, LambdaNode):
+                node.statements[index] = statement.generated_decl
 
         node.exit.accept(self)
 
@@ -2112,14 +2257,98 @@ class SemanticChecker:
         finally:
             self.current_struct = previous_struct
 
+    def visit_lambda(self, node):
+        scope = self.current_scope()
+
+        if node.name in scope:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is already declared"
+            )
+
+        fields = []
+        values = []
+        seen = set()
+
+        for name in node.captures:
+            if name in seen:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"duplicate capture '{name}'"
+                )
+
+            seen.add(name)
+            declaration = self.lookup(name)
+
+            if declaration is None:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot capture unknown variable '{name}'"
+                )
+
+            fields.append(
+                FieldDeclNode(
+                    name,
+                    declaration.type_name,
+                    False,
+                    node.line,
+                    node.column
+                )
+            )
+
+            values.append(
+                VarNode(name, node.line, node.column)
+            )
+
+        self.lambda_counter += 1
+        struct_name = f"lambda.{node.name}.{self.lambda_counter}"
+
+        method = FunctionNode(
+            "call",
+            node.parameters,
+            node.return_type,
+            node.body,
+            node.line,
+            node.column
+        )
+
+        struct = StructNode(
+            struct_name,
+            fields,
+            node.line,
+            node.column,
+            [method]
+        )
+
+        struct.accept(self)
+        self.check_member_function(struct, method)
+
+        declaration = DeclNode(
+            node.name,
+            struct_name,
+            False,
+            values,
+            node.line,
+            node.column
+        )
+
+        declaration.accept(self)
+
+        node.generated_struct = struct
+        node.generated_decl = declaration
+        self.current_program.structs.append(struct)
+
     def visit_field_decl(self, node):
         pass
 
     def visit_block(self, node):
         self.scopes.append({})
 
-        for statement in node.statements:
+        for index, statement in enumerate(node.statements):
             statement.accept(self)
+
+            if isinstance(statement, LambdaNode):
+                node.statements[index] = statement.generated_decl
 
         if node.exit is not None:
             node.exit.accept(self)
@@ -3945,6 +4174,22 @@ class AstPrinter:
             f"Function {node.name} -> {node.return_type}"
         )
         self.indent += 2
+
+        for parameter in node.parameters:
+            parameter.accept(self)
+
+        node.body.accept(self)
+        self.indent -= 2
+
+    def visit_lambda(self, node):
+        self.write(
+            f"Lambda {node.name} -> {node.return_type}"
+        )
+        self.indent += 2
+
+        self.write(
+            f"Captures: {', '.join(node.captures)}"
+        )
 
         for parameter in node.parameters:
             parameter.accept(self)
