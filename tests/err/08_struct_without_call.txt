@@ -1,0 +1,8 @@
+struct Box
+{
+    i32 value
+}
+
+Box b{10}
+print(b())
+exit 0

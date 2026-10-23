@@ -204,6 +204,17 @@ class IfNode(StmtNode):
         return visitor.visit_if(self)
 
 
+class WhileNode(StmtNode):
+    def __init__(self, condition, body, line, column):
+        self.condition = condition
+        self.body = body
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+
 class BlockNode:
     def __init__(self, statements, exit_node, line, column):
         self.statements = statements
@@ -400,6 +411,7 @@ KEYWORDS = {
     "false": "keyword",
     "if": "keyword",
     "else": "keyword",
+    "while": "keyword",
     "struct": "keyword",
     "fn": "keyword",
     "read": "keyword",
@@ -1314,6 +1326,26 @@ class Parser:
             self.ensure_end()
             statements.append(statement)
 
+    def parse_while(self):
+        token = self.eat(text="while")
+
+        if self.peek() is None:
+            raise CompileError(
+                f"line {token.line}:{token.column}: "
+                "expected condition after 'while'"
+            )
+
+        condition = self.parse_expr()
+        self.ensure_end()
+        body = self.parse_block()
+
+        return WhileNode(
+            condition,
+            body,
+            token.line,
+            token.column
+        )
+
     def parse_if(self):
         if_token = self.eat(text="if")
 
@@ -1726,6 +1758,9 @@ class Parser:
 
     def parse_statement(self):
         token = self.peek()
+
+        if token.text == "while":
+            return self.parse_while()
 
         if token.text == "fn":
             return self.parse_lambda()
@@ -2354,6 +2389,18 @@ class SemanticChecker:
             node.exit.accept(self)
 
         self.scopes.pop()
+
+    def visit_while(self, node):
+        condition_type = node.condition.accept(self)
+
+        if condition_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"the condition of 'while' must be bool, "
+                f"got {condition_type}"
+            )
+
+        node.body.accept(self)
 
     def visit_if(self, node):
         condition_type = node.condition.accept(self)
@@ -3360,6 +3407,10 @@ class CodeGen:
 
             return
 
+        if isinstance(node, WhileNode):
+            self.allocate_declarations(node.body)
+            return
+
         if isinstance(node, IfNode):
             self.allocate_declarations(
                 node.then_block
@@ -3502,6 +3553,27 @@ class CodeGen:
             and not self.builder.block.is_terminated
         ):
             node.exit.accept(self)
+
+    def visit_while(self, node):
+        function = self.builder.block.function
+
+        condition_block = function.append_basic_block("while.cond")
+        body_block = function.append_basic_block("while.body")
+        end_block = function.append_basic_block("while.end")
+
+        self.builder.branch(condition_block)
+
+        self.builder.position_at_end(condition_block)
+        condition = node.condition.accept(self)
+        self.builder.cbranch(condition, body_block, end_block)
+
+        self.builder.position_at_end(body_block)
+        node.body.accept(self)
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(condition_block)
+
+        self.builder.position_at_end(end_block)
 
     def visit_if(self, node):
         condition = node.condition.accept(self)
@@ -4225,6 +4297,13 @@ class AstPrinter:
         node.value.accept(self)
         self.indent -= 2
 
+    def visit_while(self, node):
+        self.write("While")
+        self.indent += 2
+        node.condition.accept(self)
+        node.body.accept(self)
+        self.indent -= 2
+
     def visit_if(self, node):
         self.write("If")
         self.indent += 2
@@ -4403,7 +4482,12 @@ def main():
 
         return
 
-    if ast_mode:
+    ast_checked_mode = (
+        len(sys.argv) == 3
+        and sys.argv[1] == "--ast-checked"
+    )
+
+    if ast_mode or ast_checked_mode:
         input_path = sys.argv[2]
 
         try:
@@ -4411,6 +4495,10 @@ def main():
                 data = source.read()
 
             program = parse_program(data)
+
+            if ast_checked_mode:
+                check_program(program)
+
             print_ast(program)
 
         except CompileError as error:

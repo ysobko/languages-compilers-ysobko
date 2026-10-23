@@ -1,38 +1,156 @@
-The compiler has a lexer written as a state machine. 
-It reads the source byte by byte and creates tokens with type, text, line and column.
+# Language Compiler
+
+This project is a compiler written in Python.
+
+The compiler uses a handwritten lexer and parser, checks the program for semantic errors, and generates LLVM IR using `llvmlite`.
+
+## Language Features
 
 The language supports:
 
-- `i32` variables
-- `mut` variables
-- `+`, `-`, `*`
-- assignment with `:=`
+- `i32`, `i64`, and `bool` types
+- Mutable and immutable variables
+- Arithmetic operations: `+`, `-`, `*`
+- Comparisons: `==`, `!=`
+- Assignment with `:=`
+- `if` and `else`
+- `while` loops
+- Functions with parameters and return values
+- Structures with fields and member functions
+- Function and member function calls
+- Callable objects and callable fields
+- Lambda functions with captures
+- `print()` and `read()`
 - `exit`
 
-LLVM IR is generated with `llvmlite.ir`.
+## Callable Objects
 
-## Run
+A structure can define a member function named `call`.
+
+Such objects can be called directly or through `.call()`.
+
+Example:
+
+```text
+struct Counter
+{
+    i32 mut n
+
+    fn call := () -> i32
+    {
+        n := n + 1
+        exit n
+    }
+}
+
+Counter mut c{0}
+
+print(c())
+print(c.call())
+
+exit 0
+```
+
+Both calls use the same member function.
+
+A callable object stored in a field can also be called through that field.
+
+## Lambda Functions
+
+A lambda is declared using `fn`, a capture list, parameters, and a return type.
+
+Example:
+
+```text
+i32 mut k{10}
+
+fn add_k := [k](i32 x) -> i32
+{
+    i32 result{x + k}
+    exit result
+}
+
+k := 20
+
+print(add_k(5))
+
+exit 0
+```
+
+The lambda captures the value of `k` when it is declared.
+
+Therefore, the output is `15`, even though `k` is changed later.
+
+Capture rules:
+
+- `[]` means no captured variables.
+- `[x]` captures the current value of `x`.
+- Captures are immutable inside the lambda.
+- Local variables must be explicitly captured to be used inside the lambda.
+- Global functions can be called without capturing them.
+- A lambda can capture another lambda.
+- Lambdas can be declared inside functions and loops.
+- Recursive lambda calls are not supported.
+- Lambdas cannot be passed as function arguments or returned through `exit`.
+
+## While Loops
+
+A `while` loop repeats its body while its condition is `true`.
+
+The condition must have type `bool`.
+
+Example:
+
+```text
+i32 mut i{0}
+
+while i != 3
+{
+    print(i)
+    i := i + 1
+}
+
+exit 0
+```
+
+## Build and Run
+
+Activate the Python virtual environment and install the required dependencies.
+
+Compile a source program:
 
 ```bash
 python3 compiler.py input.txt output.ll
+```
+
+Run the generated LLVM IR:
+
+```bash
 lli output.ll
+```
 
+Alternatively, compile it into an executable:
 
-Or compile to a program:
+```bash
 llc -filetype=obj -relocation-model=pic output.ll -o output.o
 clang -fPIE output.o -o program
 ./program
+```
 
-Tests are in the tests/ folder.
-There are valid and invalid test programs with expected results.
+## Tests
 
-Run a valid test:
+Valid programs are stored in `tests/ok`.
+
+Invalid programs are stored in `tests/err`.
+
+Expected results are stored in `.expected` files.
+
+Input files, when needed, use the `.in` extension.
+
+Run all tests:
 
 ```bash
-python3 compiler.py tests/valid1.txt output.ll
-lli output.ll
+python3 run_tests.py
+```
 
-Run an invalid test:
-
-```bash
-python3 compiler.py tests/invalid1.txt output.ll
+The test script compiles each program, executes valid programs using `lli`, compares their complete output, and checks expected compilation errors.

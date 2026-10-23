@@ -13,7 +13,7 @@ COMPILER = ROOT / "compiler.py"
 
 def run_valid(source):
     expected_path = source.with_suffix(".expected")
-    expected = expected_path.read_text().strip()
+    expected = expected_path.read_text().rstrip("\n")
 
     with tempfile.NamedTemporaryFile(suffix=".ll") as output:
         compile_result = subprocess.run(
@@ -30,7 +30,11 @@ def run_valid(source):
         if compile_result.returncode != 0:
             return False, compile_result.stderr.strip()
 
-        input_path = source.with_suffix(".input")
+        input_path = source.with_suffix(".in")
+
+        if not input_path.exists():
+            input_path = source.with_suffix(".input")
+
         input_data = input_path.read_text() if input_path.exists() else ""
 
         run_result = subprocess.run(
@@ -41,7 +45,7 @@ def run_valid(source):
             timeout=10,
         )
 
-        actual = run_result.stdout.strip()
+        actual = run_result.stdout.rstrip("\n")
 
         if actual != expected:
             return False, f"expected: {expected}\nactual:   {actual}"
@@ -106,6 +110,36 @@ def run_ast(source):
     return True, ""
 
 
+def run_checked_ast(source):
+    ast_path = source.with_suffix(".checked.ast")
+
+    if not ast_path.exists():
+        return True, ""
+
+    expected = ast_path.read_text().strip()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPILER),
+            "--ast-checked",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        return False, result.stderr.strip()
+
+    actual = result.stdout.strip()
+
+    if actual != expected:
+        return False, f"expected checked AST:\n{expected}\n\nactual checked AST:\n{actual}"
+
+    return True, ""
+
+
 def main():
     failures = 0
 
@@ -141,6 +175,22 @@ def main():
                 print(
                     f"FAIL "
                     f"{source.with_suffix('.ast').relative_to(TESTS)}"
+                )
+                print(ast_message)
+
+        checked_ast_path = source.with_suffix(".checked.ast")
+
+        if checked_ast_path.exists():
+            ast_ok, ast_message = run_checked_ast(source)
+
+            if ast_ok:
+                print(
+                    f"PASS {checked_ast_path.relative_to(TESTS)}"
+                )
+            else:
+                failures += 1
+                print(
+                    f"FAIL {checked_ast_path.relative_to(TESTS)}"
                 )
                 print(ast_message)
 

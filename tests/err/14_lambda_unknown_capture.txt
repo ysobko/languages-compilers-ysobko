@@ -1,0 +1,7 @@
+fn add_k := [missing](i32 y) -> i32
+{
+    exit y
+}
+
+print(add_k(5))
+exit 0
