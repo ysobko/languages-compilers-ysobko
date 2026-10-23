@@ -1,0 +1,45 @@
+I used ChatGPT while working on Practice 8.
+
+Task 1:
+
+* ChatGPT helped me understand how callable objects should work using a struct member function named call.
+* It helped extend the compiler to support direct object calls such as obj() and explicit calls such as obj.call().
+* It helped reuse the existing member function mechanism instead of implementing a separate calling system.
+* ChatGPT helped handle callable objects stored in struct fields, including nested field access.
+* It helped implement semantic checks for missing call methods, incorrect argument counts, and argument types.
+* It helped check mutability restrictions when calling member functions on immutable objects.
+* I tested direct calls, explicit .call() calls, callable fields, nested callable objects, and invalid calls.
+
+Task 2:
+
+* ChatGPT helped me understand how lambda functions and captured variables should work.
+* It helped extend the parser and AST to support lambda declarations with capture lists, parameters, and return types.
+* It suggested implementing lambdas by transforming them into generated structs with captured fields and a call member function.
+* ChatGPT helped implement semantic checks for captured variables, including unknown and duplicate captures.
+* It helped implement capture-by-value behavior so that changing the original variable does not affect the captured value.
+* It helped handle lambda calls, nested calls, and capturing another lambda.
+* I tested lambdas with and without captures, capture-by-value behavior, nested calls, and invalid capture cases.
+
+Task 3:
+
+* ChatGPT helped me extend the existing test runner to test callable objects and lambda functions.
+* It helped organize valid and invalid programs in tests/ok and tests/err with corresponding .expected files.
+* It helped support test input files using the .in extension.
+* ChatGPT helped add while loops to the compiler so that lambda declarations inside loops could be tested.
+* It helped implement the --ast-checked option to print the AST after semantic analysis and lambda transformation.
+* It helped extend run_tests.py to compare the generated checked AST with .checked.ast files.
+* I tested the AST comparison by intentionally changing an expected result to confirm that the test runner detected the difference.
+* After fixing the test data, all 97 program tests passed.
+
+Bonus:
+
+* ChatGPT helped me implement mutable lambda captures using the syntax [mut x].
+* It helped update the parser to store both the captured variable name and its mutability.
+* It helped modify semantic analysis so that mutable captures become mutable fields in the generated lambda struct.
+* While testing, I encountered the error cannot call mutating member function 'call' on const object.
+* ChatGPT helped fix this by making the generated lambda object mutable when it contains at least one mutable capture.
+* It helped update the AST printer to display mutable captures correctly.
+* I tested that changes to mutable captures persist between lambda calls without modifying the original variables.
+* I added tests for mutable captures, mixed captures, duplicate captures, and unknown variables.
+* ChatGPT helped update grammar.ebnf and README.md to document the bonus functionality.
+* After these changes, all 101 program tests passed.

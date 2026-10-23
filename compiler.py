@@ -105,6 +105,29 @@ class FunctionNode:
         return visitor.visit_function(self)
 
 
+class LambdaNode(StmtNode):
+    def __init__(
+        self,
+        name,
+        captures,
+        parameters,
+        return_type,
+        body,
+        line,
+        column
+    ):
+        self.name = name
+        self.captures = captures
+        self.parameters = parameters
+        self.return_type = return_type
+        self.body = body
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_lambda(self)
+
+
 class MemberCallNode:
     def __init__(self, obj, name, arguments, line, column):
         self.obj = obj
@@ -115,6 +138,12 @@ class MemberCallNode:
         self.type = None
 
     def accept(self, visitor):
+        if (
+            hasattr(self, "callable_member")
+            and not isinstance(visitor, SemanticChecker)
+        ):
+            return self.callable_member.accept(visitor)
+
         return visitor.visit_member_call(self)
 
 
@@ -173,6 +202,17 @@ class IfNode(StmtNode):
 
     def accept(self, visitor):
         return visitor.visit_if(self)
+
+
+class WhileNode(StmtNode):
+    def __init__(self, condition, body, line, column):
+        self.condition = condition
+        self.body = body
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
 
 
 class BlockNode:
@@ -274,6 +314,12 @@ class CallNode(ExprNode):
         self.function = None
 
     def accept(self, visitor):
+        if (
+            hasattr(self, "callable_member")
+            and not isinstance(visitor, SemanticChecker)
+        ):
+            return self.callable_member.accept(visitor)
+
         return visitor.visit_call(self)
 
 
@@ -365,6 +411,7 @@ KEYWORDS = {
     "false": "keyword",
     "if": "keyword",
     "else": "keyword",
+    "while": "keyword",
     "struct": "keyword",
     "fn": "keyword",
     "read": "keyword",
@@ -497,6 +544,16 @@ def lex(data: bytes):
             elif b == ord("."):
                 tokens.append(
                     Token("punctuation", ".", line, col)
+                )
+
+            elif b == ord("["):
+                tokens.append(
+                    Token("punctuation", "[", line, col)
+                )
+
+            elif b == ord("]"):
+                tokens.append(
+                    Token("punctuation", "]", line, col)
                 )
 
             elif b == ord("("):
@@ -1269,6 +1326,26 @@ class Parser:
             self.ensure_end()
             statements.append(statement)
 
+    def parse_while(self):
+        token = self.eat(text="while")
+
+        if self.peek() is None:
+            raise CompileError(
+                f"line {token.line}:{token.column}: "
+                "expected condition after 'while'"
+            )
+
+        condition = self.parse_expr()
+        self.ensure_end()
+        body = self.parse_block()
+
+        return WhileNode(
+            condition,
+            body,
+            token.line,
+            token.column
+        )
+
     def parse_if(self):
         if_token = self.eat(text="if")
 
@@ -1567,6 +1644,102 @@ class Parser:
             fn_token.column
         )
 
+    def parse_lambda(self):
+        fn_token = self.eat(text="fn")
+        name_token = self.eat(kind="identifier")
+        self.eat(text=":=")
+        self.eat(text="[")
+
+        captures = []
+
+        if self.peek() is not None and self.peek().text != "]":
+            while True:
+                mutable = False
+
+                if self.peek() is not None and self.peek().text == "mut":
+                    self.eat(text="mut")
+                    mutable = True
+
+                capture = self.eat(kind="identifier")
+                captures.append((capture.text, mutable))
+
+                if self.peek() is not None and self.peek().text == ",":
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text="]")
+        self.eat(text="(")
+
+        parameters = []
+
+        if self.peek() is not None and self.peek().text != ")":
+            while True:
+                type_token = self.peek()
+
+                if type_token is None:
+                    raise CompileError(
+                        f"line {name_token.line}:{self.end_column()}: "
+                        "expected parameter type"
+                    )
+
+                if (
+                    type_token.text not in ("i32", "i64", "bool")
+                    and type_token.kind != "identifier"
+                ):
+                    error_at(type_token, "expected parameter type")
+
+                self.eat()
+                param_token = self.eat(kind="identifier")
+
+                parameters.append(
+                    ParameterNode(
+                        param_token.text,
+                        type_token.text,
+                        param_token.line,
+                        param_token.column
+                    )
+                )
+
+                if self.peek() is not None and self.peek().text == ",":
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text=")")
+        self.eat(text="->")
+
+        return_type = self.peek()
+
+        if return_type is None:
+            raise CompileError(
+                f"line {name_token.line}:{self.end_column()}: "
+                "expected return type"
+            )
+
+        if (
+            return_type.text not in ("i32", "i64", "bool")
+            and return_type.kind != "identifier"
+        ):
+            error_at(return_type, "expected return type")
+
+        self.eat()
+        self.ensure_end()
+
+        body = self.parse_block()
+
+        return LambdaNode(
+            name_token.text,
+            captures,
+            parameters,
+            return_type.text,
+            body,
+            fn_token.line,
+            fn_token.column
+        )
+
     def parse_print(self):
         token = self.eat(text="print")
         self.eat(text="(")
@@ -1591,6 +1764,12 @@ class Parser:
 
     def parse_statement(self):
         token = self.peek()
+
+        if token.text == "while":
+            return self.parse_while()
+
+        if token.text == "fn":
+            return self.parse_lambda()
 
         if token.text == "print":
             return self.parse_print()
@@ -1667,6 +1846,18 @@ class Parser:
                 continue
 
             if first.text == "fn":
+                is_lambda = (
+                    len(self.tokens) > 3
+                    and self.tokens[3].text == "["
+                )
+
+                if is_lambda:
+                    phase = "statement"
+                    node = self.parse_lambda()
+                    self.ensure_end()
+                    statements.append(node)
+                    continue
+
                 if phase == "statement":
                     error_at(
                         first,
@@ -1715,6 +1906,8 @@ class SemanticChecker:
         self.functions = {}
         self.current_function = None
         self.current_struct = None
+        self.current_program = None
+        self.lambda_counter = 0
 
     def current_scope(self):
         return self.scopes[-1]
@@ -1732,6 +1925,8 @@ class SemanticChecker:
         return None
 
     def visit_program(self, node):
+        self.current_program = node
+
         for struct in node.structs:
             struct.accept(self)
 
@@ -1760,8 +1955,11 @@ class SemanticChecker:
             for method in struct.methods:
                 self.check_member_function(struct, method)
 
-        for statement in node.statements:
+        for index, statement in enumerate(node.statements):
             statement.accept(self)
+
+            if isinstance(statement, LambdaNode):
+                node.statements[index] = statement.generated_decl
 
         node.exit.accept(self)
 
@@ -1823,9 +2021,12 @@ class SemanticChecker:
                 return
 
             if isinstance(node, (CallNode, MemberCallNode)):
-                yield node
-                for argument in node.arguments:
+                resolved = getattr(node, "callable_member", node)
+                yield resolved
+
+                for argument in resolved.arguments:
                     yield from expressions(argument)
+                return
 
         for struct in program.structs:
             for method in struct.methods:
@@ -1893,9 +2094,40 @@ class SemanticChecker:
             if node is None:
                 return
 
+            node = getattr(node, "callable_member", node)
+
             if isinstance(node, MemberCallNode):
                 if node.method.is_mutating:
                     receiver = node.obj
+
+                    current = receiver
+
+                    while isinstance(current, ResultFieldNode):
+                        if not current.resolved_field.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                "cannot call mutating member function "
+                                f"'{node.name}' through const field"
+                            )
+
+                        current = current.obj
+
+                    if isinstance(current, (VarNode, FieldAccessNode)):
+                        if not current.decl.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                "cannot call mutating member function "
+                                f"'{node.name}' on const object"
+                            )
+
+                        if isinstance(current, FieldAccessNode):
+                            for field in current.resolved_fields:
+                                if not field.mutable:
+                                    raise CompileError(
+                                        f"line {node.line}:{node.column}: "
+                                        "cannot call mutating member function "
+                                        f"'{node.name}' through const field"
+                                    )
 
                     if isinstance(receiver, (VarNode, FieldAccessNode)):
                         if not receiver.decl.mutable:
@@ -2066,19 +2298,115 @@ class SemanticChecker:
         finally:
             self.current_struct = previous_struct
 
+    def visit_lambda(self, node):
+        scope = self.current_scope()
+
+        if node.name in scope:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is already declared"
+            )
+
+        fields = []
+        values = []
+        seen = set()
+
+        for name, mutable in node.captures:
+            if name in seen:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"duplicate capture '{name}'"
+                )
+
+            seen.add(name)
+            declaration = self.lookup(name)
+
+            if declaration is None:
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot capture unknown variable '{name}'"
+                )
+
+            fields.append(
+                FieldDeclNode(
+                    name,
+                    declaration.type_name,
+                    mutable,
+                    node.line,
+                    node.column
+                )
+            )
+
+            values.append(
+                VarNode(name, node.line, node.column)
+            )
+
+        self.lambda_counter += 1
+        struct_name = f"lambda.{node.name}.{self.lambda_counter}"
+
+        method = FunctionNode(
+            "call",
+            node.parameters,
+            node.return_type,
+            node.body,
+            node.line,
+            node.column
+        )
+
+        struct = StructNode(
+            struct_name,
+            fields,
+            node.line,
+            node.column,
+            [method]
+        )
+
+        struct.accept(self)
+        self.check_member_function(struct, method)
+
+        declaration = DeclNode(
+            node.name,
+            struct_name,
+            any(mutable for _, mutable in node.captures),
+            values,
+            node.line,
+            node.column
+        )
+
+        declaration.accept(self)
+
+        node.generated_struct = struct
+        node.generated_decl = declaration
+        self.current_program.structs.append(struct)
+
     def visit_field_decl(self, node):
         pass
 
     def visit_block(self, node):
         self.scopes.append({})
 
-        for statement in node.statements:
+        for index, statement in enumerate(node.statements):
             statement.accept(self)
+
+            if isinstance(statement, LambdaNode):
+                node.statements[index] = statement.generated_decl
 
         if node.exit is not None:
             node.exit.accept(self)
 
         self.scopes.pop()
+
+    def visit_while(self, node):
+        condition_type = node.condition.accept(self)
+
+        if condition_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"the condition of 'while' must be bool, "
+                f"got {condition_type}"
+            )
+
+        node.body.accept(self)
 
     def visit_if(self, node):
         condition_type = node.condition.accept(self)
@@ -2512,6 +2840,37 @@ class SemanticChecker:
         )
 
         if method is None:
+            field = next(
+                (
+                    field
+                    for field in struct.fields
+                    if field.name == node.name
+                ),
+                None
+            )
+
+            if field is not None:
+                receiver = ResultFieldNode(
+                    node.obj,
+                    node.name,
+                    node.line,
+                    node.column
+                )
+
+                callable_call = MemberCallNode(
+                    receiver,
+                    "call",
+                    node.arguments,
+                    node.line,
+                    node.column
+                )
+
+                callable_call.accept(self)
+
+                node.callable_member = callable_call
+                node.type = callable_call.type
+                return node.type
+
             raise CompileError(
                 f"line {node.line}:{node.column}: "
                 f"struct '{object_type}' has no member function "
@@ -2551,7 +2910,84 @@ class SemanticChecker:
 
         return node.type
 
+    def resolve_callable_object(self, node):
+        declaration = self.lookup(node.name)
+
+        if declaration is None:
+            return None
+
+        if node.name in self.functions:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is both a variable and a function: "
+                "rename one of them"
+            )
+
+        object_type = declaration.type_name
+        struct = self.structs.get(object_type)
+
+        if struct is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is not callable: "
+                f"it is {object_type}"
+            )
+
+        method = next(
+            (
+                method
+                for method in struct.methods
+                if method.name == "call"
+            ),
+            None
+        )
+
+        if method is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is not callable: "
+                f"{object_type} has no member function 'call'"
+            )
+
+        receiver = VarNode(
+            node.name,
+            node.line,
+            node.column
+        )
+
+        member_call = MemberCallNode(
+            receiver,
+            "call",
+            node.arguments,
+            node.line,
+            node.column
+        )
+
+        try:
+            member_call.accept(self)
+        except CompileError as error:
+            message = str(error)
+            message = message.replace(
+                "member function 'call'",
+                f"callable object '{node.name}'"
+            )
+            message = message.replace(
+                "pass argument to 'call'",
+                f"pass argument to '{node.name}'"
+            )
+            raise CompileError(message) from None
+
+        node.callable_member = member_call
+        node.type = member_call.type
+
+        return node.type
+
     def visit_call(self, node):
+        callable_type = self.resolve_callable_object(node)
+
+        if callable_type is not None:
+            return callable_type
+
         if self.current_struct is not None:
             method = next(
                 (
@@ -2977,6 +3413,10 @@ class CodeGen:
 
             return
 
+        if isinstance(node, WhileNode):
+            self.allocate_declarations(node.body)
+            return
+
         if isinstance(node, IfNode):
             self.allocate_declarations(
                 node.then_block
@@ -3119,6 +3559,27 @@ class CodeGen:
             and not self.builder.block.is_terminated
         ):
             node.exit.accept(self)
+
+    def visit_while(self, node):
+        function = self.builder.block.function
+
+        condition_block = function.append_basic_block("while.cond")
+        body_block = function.append_basic_block("while.body")
+        end_block = function.append_basic_block("while.end")
+
+        self.builder.branch(condition_block)
+
+        self.builder.position_at_end(condition_block)
+        condition = node.condition.accept(self)
+        self.builder.cbranch(condition, body_block, end_block)
+
+        self.builder.position_at_end(body_block)
+        node.body.accept(self)
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(condition_block)
+
+        self.builder.position_at_end(end_block)
 
     def visit_if(self, node):
         condition = node.condition.accept(self)
@@ -3798,6 +4259,27 @@ class AstPrinter:
         node.body.accept(self)
         self.indent -= 2
 
+    def visit_lambda(self, node):
+        self.write(
+            f"Lambda {node.name} -> {node.return_type}"
+        )
+        self.indent += 2
+
+        captures = [
+            f"mut {name}" if mutable else name
+            for name, mutable in node.captures
+        ]
+
+        self.write(
+            f"Captures: {', '.join(captures)}"
+        )
+
+        for parameter in node.parameters:
+            parameter.accept(self)
+
+        node.body.accept(self)
+        self.indent -= 2
+
     def visit_parameter(self, node):
         self.write(
             f"Parameter {node.name} {node.type_name}"
@@ -3824,6 +4306,13 @@ class AstPrinter:
 
         self.indent += 2
         node.value.accept(self)
+        self.indent -= 2
+
+    def visit_while(self, node):
+        self.write("While")
+        self.indent += 2
+        node.condition.accept(self)
+        node.body.accept(self)
         self.indent -= 2
 
     def visit_if(self, node):
@@ -4004,7 +4493,12 @@ def main():
 
         return
 
-    if ast_mode:
+    ast_checked_mode = (
+        len(sys.argv) == 3
+        and sys.argv[1] == "--ast-checked"
+    )
+
+    if ast_mode or ast_checked_mode:
         input_path = sys.argv[2]
 
         try:
@@ -4012,6 +4506,10 @@ def main():
                 data = source.read()
 
             program = parse_program(data)
+
+            if ast_checked_mode:
+                check_program(program)
+
             print_ast(program)
 
         except CompileError as error:

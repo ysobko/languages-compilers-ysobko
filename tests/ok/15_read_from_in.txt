@@ -1,0 +1,3 @@
+i32 x{read()}
+print(x)
+exit 0

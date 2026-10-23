@@ -1,0 +1,19 @@
+struct Multiplier
+{
+    i32 factor
+
+    fn call := (i32 x) -> i32
+    {
+        i32 result{factor * x}
+        exit result
+    }
+}
+
+struct Service
+{
+    Multiplier scale
+}
+
+Service s{{3}}
+print(s.scale(7))
+exit 0
