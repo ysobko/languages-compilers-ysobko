@@ -191,3 +191,35 @@ python3 run_tests.py
 ```
 
 The test script compiles each program, executes valid programs using `lli`, compares their complete output, and checks expected compilation errors.
+
+## Optimizations
+
+The compiler supports the `--remove-unused` flag. Optimization runs after semantic checking and before LLVM code generation.
+
+- **Unused variable elimination:** Removes declarations and assignments whose values are never read. The pass repeats until no more variables can be removed. Declarations and assignments containing function calls or `read()` are preserved because they may have side effects.
+- **Unused global function elimination:** Removes unused global functions, including functions that become unused after other functions are removed. Struct methods and lambdas are preserved.
+
+To inspect the optimized AST, run:
+
+    python3 compiler.py --remove-unused --ast-checked input.txt
+
+To run all tests with optimization, run:
+
+    python3 run_tests.py --remove-unused
+
+**Known limitations:** A self-feeding assignment such as `k := k + 1` counts as a read, so an otherwise unused variable may be retained. Unreachable cycles of mutually calling functions may also remain.
+
+### Memory management
+
+The compiler is implemented in Python. CPython uses reference counting and a cyclic garbage collector. When the optimizer removes an AST subtree and no strong references remain, Python automatically reclaims its memory.
+
+AST nodes do not store explicit parent pointers. If they did, bidirectional parent-child references could create cycles that reference counting alone could not reclaim. Python's cyclic garbage collector can handle unreachable cycles.
+
+We verified memory reclamation using `weakref.ref(node)` on an unused declaration. The experiment produced:
+
+    Before optimization: True
+    After optimization: None
+
+After running the optimization and `gc.collect()`, the weak reference returned `None`, confirming that the removed node was reclaimed.
+
+This concerns the compiler's AST memory, not the compiled program's memory. The compiled language does not support heap allocation yet.
