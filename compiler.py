@@ -1899,6 +1899,234 @@ class Parser:
 
 
 
+
+
+def has_call_or_read(node):
+    if node is None:
+        return False
+
+    if isinstance(node, (CallNode, MemberCallNode, ReadNode)):
+        return True
+
+    if isinstance(node, BinOpNode):
+        return (
+            has_call_or_read(node.left)
+            or has_call_or_read(node.right)
+        )
+
+    if isinstance(node, NotNode):
+        return has_call_or_read(node.value)
+
+    if isinstance(node, StructInitNode):
+        return any(
+            has_call_or_read(value)
+            for value in node.values
+        )
+
+    if isinstance(node, ResultFieldNode):
+        return has_call_or_read(node.obj)
+
+    return False
+
+
+class UseCounter:
+    def __init__(self):
+        self.reads = {}
+
+    def read(self, declaration):
+        if isinstance(declaration, DeclNode):
+            key = id(declaration)
+            self.reads[key] = self.reads.get(key, 0) + 1
+
+    def visit_program(self, node):
+        for struct in node.structs:
+            struct.accept(self)
+        for function in node.functions:
+            function.accept(self)
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit is not None:
+            node.exit.accept(self)
+
+    def visit_struct(self, node):
+        for method in node.methods:
+            method.accept(self)
+
+    def visit_function(self, node):
+        node.body.accept(self)
+
+    def visit_block(self, node):
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit is not None:
+            node.exit.accept(self)
+
+    def visit_decl(self, node):
+        self.reads.setdefault(id(node), 0)
+
+        if any(
+            has_call_or_read(value)
+            for value in node.init_values
+        ):
+            self.read(node)
+
+        for value in node.init_values:
+            value.accept(self)
+
+    def visit_assign(self, node):
+        if has_call_or_read(node.value):
+            self.read(node.decl)
+
+        node.value.accept(self)
+
+    def visit_var(self, node):
+        self.read(node.decl)
+
+    def visit_field_access(self, node):
+        self.read(node.decl)
+
+    def visit_result_field(self, node):
+        node.obj.accept(self)
+
+    def visit_if(self, node):
+        node.condition.accept(self)
+        node.then_block.accept(self)
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+    def visit_while(self, node):
+        node.condition.accept(self)
+        node.body.accept(self)
+
+    def visit_exit(self, node):
+        node.value.accept(self)
+
+    def visit_print(self, node):
+        node.value.accept(self)
+
+    def visit_binop(self, node):
+        node.left.accept(self)
+        node.right.accept(self)
+
+    def visit_not(self, node):
+        node.value.accept(self)
+
+    def visit_struct_init(self, node):
+        for value in node.values:
+            value.accept(self)
+
+    def visit_call(self, node):
+        if hasattr(node, "callable_member"):
+            node.callable_member.accept(self)
+        else:
+            for argument in node.arguments:
+                argument.accept(self)
+
+    def visit_member_call(self, node):
+        node.obj.accept(self)
+        for argument in node.arguments:
+            argument.accept(self)
+
+    def visit_lambda(self, node):
+        node.body.accept(self)
+
+    def visit_const(self, node):
+        pass
+
+    def visit_bool(self, node):
+        pass
+
+    def visit_read(self, node):
+        pass
+
+    def visit_string(self, node):
+        pass
+
+    def visit_field_decl(self, node):
+        pass
+
+    def visit_parameter(self, node):
+        pass
+
+
+
+class Pruner:
+    def __init__(self, dead):
+        self.dead = dead
+        self.removed = 0
+
+    def prune(self, program):
+        program.statements = self.prune_statements(
+            program.statements
+        )
+
+        for function in program.functions:
+            self.prune_block(function.body)
+
+        for struct in program.structs:
+            for method in struct.methods:
+                self.prune_block(method.body)
+
+        return program
+
+    def prune_block(self, block):
+        block.statements = self.prune_statements(
+            block.statements
+        )
+
+    def prune_statements(self, statements):
+        result = []
+
+        for statement in statements:
+            if isinstance(statement, DeclNode):
+                if id(statement) in self.dead:
+                    self.removed += 1
+                    continue
+
+            if isinstance(statement, AssignNode):
+                if (
+                    statement.decl is not None
+                    and id(statement.decl) in self.dead
+                ):
+                    self.removed += 1
+                    continue
+
+            if isinstance(statement, IfNode):
+                self.prune_block(statement.then_block)
+
+                if statement.else_block is not None:
+                    self.prune_block(statement.else_block)
+
+            if isinstance(statement, WhileNode):
+                self.prune_block(statement.body)
+
+            result.append(statement)
+
+        return result
+
+
+
+def remove_unused(program):
+    while True:
+        counter = UseCounter()
+        program.accept(counter)
+
+        dead = {
+            declaration_id
+            for declaration_id, count in counter.reads.items()
+            if count == 0
+        }
+
+        if not dead:
+            return program
+
+        pruner = Pruner(dead)
+        pruner.prune(program)
+
+        if pruner.removed == 0:
+            return program
+
+
 class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]
@@ -4447,10 +4675,13 @@ def check_program(program):
     program.accept(checker)
 
 
-def compile_program(data):
+def compile_program(data, optimize=False):
     program = parse_program(data)
 
     check_program(program)
+
+    if optimize:
+        remove_unused(program)
 
     codegen = CodeGen()
     return program.accept(codegen)
@@ -4493,13 +4724,19 @@ def main():
 
         return
 
+    optimized_ast_mode = (
+        len(sys.argv) == 4
+        and sys.argv[1] == "--remove-unused"
+        and sys.argv[2] == "--ast-checked"
+    )
+
     ast_checked_mode = (
         len(sys.argv) == 3
         and sys.argv[1] == "--ast-checked"
     )
 
-    if ast_mode or ast_checked_mode:
-        input_path = sys.argv[2]
+    if ast_mode or ast_checked_mode or optimized_ast_mode:
+        input_path = sys.argv[3] if optimized_ast_mode else sys.argv[2]
 
         try:
             with open(input_path, "rb") as source:
@@ -4507,8 +4744,11 @@ def main():
 
             program = parse_program(data)
 
-            if ast_checked_mode:
+            if ast_checked_mode or optimized_ast_mode:
                 check_program(program)
+
+            if optimized_ast_mode:
+                remove_unused(program)
 
             print_ast(program)
 
@@ -4528,21 +4768,29 @@ def main():
 
         return
 
-    if len(sys.argv) != 3:
+    optimize = (
+        len(sys.argv) == 4
+        and sys.argv[1] == "--remove-unused"
+    )
+
+    if optimize:
+        input_path = sys.argv[2]
+        output_path = sys.argv[3]
+    elif len(sys.argv) == 3:
+        input_path = sys.argv[1]
+        output_path = sys.argv[2]
+    else:
         print(
-            "usage: python3 compiler.py input.txt output.ll",
+            "usage: python3 compiler.py [--remove-unused] input.txt output.ll",
             file=sys.stderr
         )
         sys.exit(1)
-
-    input_path = sys.argv[1]
-    output_path = sys.argv[2]
 
     try:
         with open(input_path, "rb") as source:
             data = source.read()
 
-        llvm_ir = compile_program(data)
+        llvm_ir = compile_program(data, optimize=optimize)
 
         with open(output_path, "w") as output:
             output.write(llvm_ir)
