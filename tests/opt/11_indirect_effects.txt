@@ -1,0 +1,26 @@
+fn third := () -> i32
+{
+    print(42)
+    exit 3
+}
+
+fn second := () -> i32
+{
+    i32 result{third()}
+    exit result
+}
+
+fn first := () -> i32
+{
+    i32 result{second()}
+    exit result
+}
+
+fn quiet := () -> i32
+{
+    exit 5
+}
+
+i32 a{first()}
+i32 b{quiet()}
+exit 0

@@ -196,8 +196,9 @@ The test script compiles each program, executes valid programs using `lli`, comp
 
 The compiler supports the `--remove-unused` flag. Optimization runs after semantic checking and before LLVM code generation.
 
-- **Unused variable elimination:** Removes declarations and assignments whose values are never read. The pass repeats until no more variables can be removed. Declarations and assignments containing function calls or `read()` are preserved because they may have side effects.
-- **Unused global function elimination:** Removes unused global functions, including functions that become unused after other functions are removed. Struct methods and lambdas are preserved.
+- **Unused variable elimination:** Removes declarations and assignments whose values are never read. The pass repeats until no more variables can be removed. Initializers with side effects are preserved.
+- **Unused global function elimination:** Removes unused global functions, including functions that become unused after other functions or declarations are removed. Struct methods and lambdas are not directly eliminated by this pass.
+- **Calls without effects (additional task):** Analyzes functions and methods to identify calls that can be safely removed when their results are unused. Functions containing `print`, `read`, `while`, or field mutations are treated as effectful. Effects propagate through function calls. Recursive functions are conservatively treated as effectful. Pure calls can be removed, but calls with effectful arguments are preserved. The optimization repeats until no further declarations or global functions can be removed.
 
 To inspect the optimized AST, run:
 

@@ -1,0 +1,20 @@
+Program
+  Function count -> i32
+    Block
+      Decl x i32 mut
+        Const 0
+      While
+        BinOp !=
+          Var x
+          Const 3
+        Block
+          Assign x
+            BinOp +
+              Var x
+              Const 1
+      Exit
+        Var x
+  Decl a i32 const
+    Call count
+  Exit
+    Const 0

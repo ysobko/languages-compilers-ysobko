@@ -1901,37 +1901,344 @@ class Parser:
 
 
 
-def has_call_or_read(node):
+
+class EffectAnalyzer:
+    def __init__(self):
+        self.effects = set()
+
+    def analyze(self, program):
+        functions = list(program.functions)
+
+        for struct in program.structs:
+            functions.extend(struct.methods)
+
+        for function in functions:
+            if (
+                self.has_direct_effect(function.body)
+                or self.is_recursive(function)
+            ):
+                self.effects.add(id(function))
+
+        while True:
+            previous = len(self.effects)
+
+            for function in functions:
+                if id(function) in self.effects:
+                    continue
+
+                if self.calls_effectful_function(function.body):
+                    self.effects.add(id(function))
+
+            if len(self.effects) == previous:
+                break
+
+        return self.effects
+
+    def calls_effectful_function(self, node):
+        if node is None:
+            return False
+
+        if isinstance(node, CallNode):
+            resolved = getattr(node, "callable_member", node)
+
+            if resolved is not node:
+                return self.calls_effectful_function(resolved)
+
+            if node.function is not None:
+                if id(node.function) in self.effects:
+                    return True
+
+            return any(
+                self.calls_effectful_function(arg)
+                for arg in node.arguments
+            )
+
+        if isinstance(node, MemberCallNode):
+            resolved = getattr(node, "callable_member", node)
+
+            if resolved is not node:
+                return self.calls_effectful_function(resolved)
+
+            if id(getattr(node, "method", None)) in self.effects:
+                return True
+
+            return (
+                self.calls_effectful_function(node.obj)
+                or any(
+                    self.calls_effectful_function(arg)
+                    for arg in node.arguments
+                )
+            )
+
+        if isinstance(node, BlockNode):
+            return (
+                any(
+                    self.calls_effectful_function(s)
+                    for s in node.statements
+                )
+                or self.calls_effectful_function(node.exit)
+            )
+
+        if isinstance(node, IfNode):
+            return (
+                self.calls_effectful_function(node.condition)
+                or self.calls_effectful_function(node.then_block)
+                or self.calls_effectful_function(node.else_block)
+            )
+
+        if isinstance(node, WhileNode):
+            return (
+                self.calls_effectful_function(node.condition)
+                or self.calls_effectful_function(node.body)
+            )
+
+        if isinstance(node, DeclNode):
+            return any(
+                self.calls_effectful_function(value)
+                for value in node.init_values
+            )
+
+        if isinstance(node, (AssignNode, ExitNode, PrintNode, NotNode)):
+            return self.calls_effectful_function(node.value)
+
+        if isinstance(node, BinOpNode):
+            return (
+                self.calls_effectful_function(node.left)
+                or self.calls_effectful_function(node.right)
+            )
+
+        if isinstance(node, StructInitNode):
+            return any(
+                self.calls_effectful_function(value)
+                for value in node.values
+            )
+
+        if isinstance(node, ResultFieldNode):
+            return self.calls_effectful_function(node.obj)
+
+        return False
+
+    def has_direct_effect(self, node):
+        if node is None:
+            return False
+
+        if isinstance(node, (PrintNode, ReadNode, WhileNode)):
+            return True
+
+        if isinstance(node, AssignNode):
+            if (
+                getattr(node, "is_member_field", False)
+                or node.fields
+            ):
+                return True
+
+        if isinstance(node, BlockNode):
+            return (
+                any(self.has_direct_effect(s) for s in node.statements)
+                or self.has_direct_effect(node.exit)
+            )
+
+        if isinstance(node, IfNode):
+            return (
+                self.has_direct_effect(node.condition)
+                or self.has_direct_effect(node.then_block)
+                or self.has_direct_effect(node.else_block)
+            )
+
+        if isinstance(node, DeclNode):
+            return any(
+                self.has_direct_effect(value)
+                for value in node.init_values
+            )
+
+        if isinstance(node, AssignNode):
+            return self.has_direct_effect(node.value)
+
+        if isinstance(node, ExitNode):
+            return self.has_direct_effect(node.value)
+
+        if isinstance(node, BinOpNode):
+            return (
+                self.has_direct_effect(node.left)
+                or self.has_direct_effect(node.right)
+            )
+
+        if isinstance(node, NotNode):
+            return self.has_direct_effect(node.value)
+
+        if isinstance(node, StructInitNode):
+            return any(
+                self.has_direct_effect(value)
+                for value in node.values
+            )
+
+        if isinstance(node, ResultFieldNode):
+            return self.has_direct_effect(node.obj)
+
+        if isinstance(node, (CallNode, MemberCallNode)):
+            return (
+                any(
+                    self.has_direct_effect(arg)
+                    for arg in node.arguments
+                )
+                or (
+                    isinstance(node, MemberCallNode)
+                    and self.has_direct_effect(node.obj)
+                )
+            )
+
+        return False
+
+    def collect_called_functions(self, node):
+        if node is None:
+            return set()
+
+        if isinstance(node, (CallNode, MemberCallNode)):
+            resolved = getattr(node, "callable_member", node)
+
+            if resolved is not node:
+                return self.collect_called_functions(resolved)
+
+            result = set()
+            target = getattr(node, "function", None)
+
+            if isinstance(node, MemberCallNode):
+                target = getattr(node, "method", None)
+                result.update(self.collect_called_functions(node.obj))
+
+            if target is not None:
+                result.add(target)
+
+            for argument in node.arguments:
+                result.update(self.collect_called_functions(argument))
+
+            return result
+
+        if isinstance(node, BlockNode):
+            result = set()
+            for statement in node.statements:
+                result.update(self.collect_called_functions(statement))
+            result.update(self.collect_called_functions(node.exit))
+            return result
+
+        if isinstance(node, IfNode):
+            return (
+                self.collect_called_functions(node.condition)
+                | self.collect_called_functions(node.then_block)
+                | self.collect_called_functions(node.else_block)
+            )
+
+        if isinstance(node, WhileNode):
+            return (
+                self.collect_called_functions(node.condition)
+                | self.collect_called_functions(node.body)
+            )
+
+        if isinstance(node, DeclNode):
+            result = set()
+            for value in node.init_values:
+                result.update(self.collect_called_functions(value))
+            return result
+
+        if isinstance(node, (AssignNode, ExitNode, PrintNode, NotNode)):
+            return self.collect_called_functions(node.value)
+
+        if isinstance(node, BinOpNode):
+            return (
+                self.collect_called_functions(node.left)
+                | self.collect_called_functions(node.right)
+            )
+
+        if isinstance(node, StructInitNode):
+            result = set()
+            for value in node.values:
+                result.update(self.collect_called_functions(value))
+            return result
+
+        if isinstance(node, ResultFieldNode):
+            return self.collect_called_functions(node.obj)
+
+        return set()
+
+    def is_recursive(self, function):
+        visited = set()
+        pending = list(self.collect_called_functions(function.body))
+
+        while pending:
+            current = pending.pop()
+
+            if current is function:
+                return True
+
+            if id(current) in visited:
+                continue
+
+            visited.add(id(current))
+            pending.extend(
+                self.collect_called_functions(current.body)
+            )
+
+        return False
+
+
+
+def has_call_or_read(node, effects=None):
     if node is None:
         return False
 
-    if isinstance(node, (CallNode, MemberCallNode, ReadNode)):
+    if effects is None:
+        effects = set()
+
+    if isinstance(node, ReadNode):
         return True
+
+    if isinstance(node, (CallNode, MemberCallNode)):
+        resolved = getattr(node, "callable_member", node)
+
+        if resolved is not node:
+            return has_call_or_read(resolved, effects)
+
+        target = getattr(node, "function", None)
+
+        if isinstance(node, MemberCallNode):
+            target = getattr(node, "method", None)
+
+            if has_call_or_read(node.obj, effects):
+                return True
+
+        if target is None or id(target) in effects:
+            return True
+
+        return any(
+            has_call_or_read(argument, effects)
+            for argument in node.arguments
+        )
 
     if isinstance(node, BinOpNode):
         return (
-            has_call_or_read(node.left)
-            or has_call_or_read(node.right)
+            has_call_or_read(node.left, effects)
+            or has_call_or_read(node.right, effects)
         )
 
     if isinstance(node, NotNode):
-        return has_call_or_read(node.value)
+        return has_call_or_read(node.value, effects)
 
     if isinstance(node, StructInitNode):
         return any(
-            has_call_or_read(value)
+            has_call_or_read(value, effects)
             for value in node.values
         )
 
     if isinstance(node, ResultFieldNode):
-        return has_call_or_read(node.obj)
+        return has_call_or_read(node.obj, effects)
 
     return False
 
 
 class UseCounter:
-    def __init__(self):
+    def __init__(self, effects=None):
         self.reads = {}
+        self.effects = effects if effects is not None else set()
 
     def read(self, declaration):
         if isinstance(declaration, DeclNode):
@@ -1965,7 +2272,7 @@ class UseCounter:
         self.reads.setdefault(id(node), 0)
 
         if any(
-            has_call_or_read(value)
+            has_call_or_read(value, self.effects)
             for value in node.init_values
         ):
             self.read(node)
@@ -1974,7 +2281,7 @@ class UseCounter:
             value.accept(self)
 
     def visit_assign(self, node):
-        if has_call_or_read(node.value):
+        if has_call_or_read(node.value, self.effects):
             self.read(node.decl)
 
         node.value.accept(self)
@@ -2121,7 +2428,8 @@ class Pruner:
 
 def remove_unused(program):
     while True:
-        counter = UseCounter()
+        effects = EffectAnalyzer().analyze(program)
+        counter = UseCounter(effects)
         program.accept(counter)
 
         dead = {
@@ -2159,6 +2467,31 @@ def remove_unused_functions(program):
             for function in program.functions
             if id(function) not in dead
         ]
+
+
+def optimize_program(program):
+    while True:
+        before = (
+            len(program.functions),
+            count_declarations(program)
+        )
+
+        remove_unused(program)
+        remove_unused_functions(program)
+
+        after = (
+            len(program.functions),
+            count_declarations(program)
+        )
+
+        if before == after:
+            return program
+
+
+def count_declarations(program):
+    counter = UseCounter()
+    program.accept(counter)
+    return len(counter.reads)
 
 
 class SemanticChecker:
@@ -4715,8 +5048,7 @@ def compile_program(data, optimize=False):
     check_program(program)
 
     if optimize:
-        remove_unused_functions(program)
-        remove_unused(program)
+        optimize_program(program)
 
     codegen = CodeGen()
     return program.accept(codegen)
@@ -4783,8 +5115,7 @@ def main():
                 check_program(program)
 
             if optimized_ast_mode:
-                remove_unused_functions(program)
-                remove_unused(program)
+                optimize_program(program)
 
             print_ast(program)
 

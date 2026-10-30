@@ -1,0 +1,14 @@
+fn square := (i32 x) -> i32
+{
+    i32 result{x * x}
+    exit result
+}
+
+fn loud := () -> i32
+{
+    print(42)
+    exit 5
+}
+
+i32 unused{square(loud())}
+exit 0
