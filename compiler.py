@@ -2050,6 +2050,19 @@ class UseCounter:
 
 
 
+class FunctionUseCounter(UseCounter):
+    def __init__(self):
+        super().__init__()
+        self.calls = {}
+
+    def visit_call(self, node):
+        if node.function is not None:
+            key = id(node.function)
+            self.calls[key] = self.calls.get(key, 0) + 1
+
+        super().visit_call(node)
+
+
 class Pruner:
     def __init__(self, dead):
         self.dead = dead
@@ -2125,6 +2138,27 @@ def remove_unused(program):
 
         if pruner.removed == 0:
             return program
+
+
+def remove_unused_functions(program):
+    while True:
+        counter = FunctionUseCounter()
+        program.accept(counter)
+
+        dead = {
+            id(function)
+            for function in program.functions
+            if counter.calls.get(id(function), 0) == 0
+        }
+
+        if not dead:
+            return program
+
+        program.functions = [
+            function
+            for function in program.functions
+            if id(function) not in dead
+        ]
 
 
 class SemanticChecker:
@@ -4681,6 +4715,7 @@ def compile_program(data, optimize=False):
     check_program(program)
 
     if optimize:
+        remove_unused_functions(program)
         remove_unused(program)
 
     codegen = CodeGen()
@@ -4748,6 +4783,7 @@ def main():
                 check_program(program)
 
             if optimized_ast_mode:
+                remove_unused_functions(program)
                 remove_unused(program)
 
             print_ast(program)
