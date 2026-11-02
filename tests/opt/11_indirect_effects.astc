@@ -1,0 +1,23 @@
+Program
+  Function third -> i32
+    Block
+      Print
+        Const 42
+      Exit
+        Const 3
+  Function second -> i32
+    Block
+      Decl result i32 const
+        Call third
+      Exit
+        Var result
+  Function first -> i32
+    Block
+      Decl result i32 const
+        Call second
+      Exit
+        Var result
+  Decl a i32 const
+    Call first
+  Exit
+    Const 0

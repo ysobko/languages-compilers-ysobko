@@ -1,0 +1,11 @@
+Program
+  Function calculate -> i32
+    Block
+      Print
+        Const 42
+      Exit
+        Const 10
+  Decl unused i32 const
+    Call calculate
+  Exit
+    Const 0

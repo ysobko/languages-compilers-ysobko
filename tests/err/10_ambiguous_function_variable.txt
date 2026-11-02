@@ -1,0 +1,8 @@
+fn calculate := (i32 x) -> i32
+{
+    exit x
+}
+
+i32 calculate{10}
+print(calculate(5))
+exit 0

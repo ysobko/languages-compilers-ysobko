@@ -105,6 +105,29 @@ class FunctionNode:
         return visitor.visit_function(self)
 
 
+class LambdaNode(StmtNode):
+    def __init__(
+        self,
+        name,
+        captures,
+        parameters,
+        return_type,
+        body,
+        line,
+        column
+    ):
+        self.name = name
+        self.captures = captures
+        self.parameters = parameters
+        self.return_type = return_type
+        self.body = body
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_lambda(self)
+
+
 class MemberCallNode:
     def __init__(self, obj, name, arguments, line, column):
         self.obj = obj
@@ -115,6 +138,12 @@ class MemberCallNode:
         self.type = None
 
     def accept(self, visitor):
+        if (
+            hasattr(self, "callable_member")
+            and not isinstance(visitor, SemanticChecker)
+        ):
+            return self.callable_member.accept(visitor)
+
         return visitor.visit_member_call(self)
 
 
@@ -173,6 +202,17 @@ class IfNode(StmtNode):
 
     def accept(self, visitor):
         return visitor.visit_if(self)
+
+
+class WhileNode(StmtNode):
+    def __init__(self, condition, body, line, column):
+        self.condition = condition
+        self.body = body
+        self.line = line
+        self.column = column
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
 
 
 class BlockNode:
@@ -274,6 +314,12 @@ class CallNode(ExprNode):
         self.function = None
 
     def accept(self, visitor):
+        if (
+            hasattr(self, "callable_member")
+            and not isinstance(visitor, SemanticChecker)
+        ):
+            return self.callable_member.accept(visitor)
+
         return visitor.visit_call(self)
 
 
@@ -365,6 +411,7 @@ KEYWORDS = {
     "false": "keyword",
     "if": "keyword",
     "else": "keyword",
+    "while": "keyword",
     "struct": "keyword",
     "fn": "keyword",
     "read": "keyword",
@@ -419,18 +466,52 @@ def lex(data: bytes):
 
             elif b == ord('"'):
                 start_col = col
-                end = data.find(b'"', i + 1)
+                j = i + 1
+                value = bytearray()
 
-                if end == -1 or b"\n" in data[i + 1:end]:
+                escapes = {
+                    ord("n"): 10,
+                    ord("t"): 9,
+                    ord("r"): 13,
+                    ord('"'): 34,
+                    ord("\\"): 92,
+                }
+
+                while j < len(data):
+                    current = data[j]
+
+                    if current == ord('"'):
+                        break
+
+                    if current == 10:
+                        raise CompileError(
+                            f"line {line}:{col}: unterminated string literal"
+                        )
+
+                    if current == ord("\\"):
+                        j += 1
+
+                        if j >= len(data) or data[j] == 10:
+                            raise CompileError(
+                                f"line {line}:{col}: unterminated string literal"
+                            )
+
+                        escaped = data[j]
+
+                        if escaped not in escapes:
+                            raise CompileError(
+                                f"line {line}:{col}: unknown string escape"
+                            )
+
+                        value.append(escapes[escaped])
+                    else:
+                        value.append(current)
+
+                    j += 1
+
+                if j >= len(data):
                     raise CompileError(
                         f"line {line}:{col}: unterminated string literal"
-                    )
-
-                value = data[i + 1:end]
-
-                if b"\\" in value:
-                    raise CompileError(
-                        f"line {line}:{col}: string escapes are not supported"
                     )
 
                 try:
@@ -439,6 +520,8 @@ def lex(data: bytes):
                     raise CompileError(
                         f"line {line}:{col}: invalid UTF-8 string"
                     )
+
+                end = j
 
                 tokens.append(Token("string", text, line, col))
                 col += end - i
@@ -497,6 +580,16 @@ def lex(data: bytes):
             elif b == ord("."):
                 tokens.append(
                     Token("punctuation", ".", line, col)
+                )
+
+            elif b == ord("["):
+                tokens.append(
+                    Token("punctuation", "[", line, col)
+                )
+
+            elif b == ord("]"):
+                tokens.append(
+                    Token("punctuation", "]", line, col)
                 )
 
             elif b == ord("("):
@@ -1269,6 +1362,26 @@ class Parser:
             self.ensure_end()
             statements.append(statement)
 
+    def parse_while(self):
+        token = self.eat(text="while")
+
+        if self.peek() is None:
+            raise CompileError(
+                f"line {token.line}:{token.column}: "
+                "expected condition after 'while'"
+            )
+
+        condition = self.parse_expr()
+        self.ensure_end()
+        body = self.parse_block()
+
+        return WhileNode(
+            condition,
+            body,
+            token.line,
+            token.column
+        )
+
     def parse_if(self):
         if_token = self.eat(text="if")
 
@@ -1567,6 +1680,106 @@ class Parser:
             fn_token.column
         )
 
+    def parse_lambda(self):
+        fn_token = self.eat(text="fn")
+        name_token = self.eat(kind="identifier")
+        self.eat(text=":=")
+        self.eat(text="[")
+
+        captures = []
+        capture_positions = []
+
+        if self.peek() is not None and self.peek().text != "]":
+            while True:
+                mutable = False
+
+                if self.peek() is not None and self.peek().text == "mut":
+                    self.eat(text="mut")
+                    mutable = True
+
+                capture = self.eat(kind="identifier")
+                captures.append((capture.text, mutable))
+                capture_positions.append((capture.line, capture.column))
+
+                if self.peek() is not None and self.peek().text == ",":
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text="]")
+        self.eat(text="(")
+
+        parameters = []
+
+        if self.peek() is not None and self.peek().text != ")":
+            while True:
+                type_token = self.peek()
+
+                if type_token is None:
+                    raise CompileError(
+                        f"line {name_token.line}:{self.end_column()}: "
+                        "expected parameter type"
+                    )
+
+                if (
+                    type_token.text not in ("i32", "i64", "bool")
+                    and type_token.kind != "identifier"
+                ):
+                    error_at(type_token, "expected parameter type")
+
+                self.eat()
+                param_token = self.eat(kind="identifier")
+
+                parameters.append(
+                    ParameterNode(
+                        param_token.text,
+                        type_token.text,
+                        param_token.line,
+                        param_token.column
+                    )
+                )
+
+                if self.peek() is not None and self.peek().text == ",":
+                    self.eat(text=",")
+                    continue
+
+                break
+
+        self.eat(text=")")
+        self.eat(text="->")
+
+        return_type = self.peek()
+
+        if return_type is None:
+            raise CompileError(
+                f"line {name_token.line}:{self.end_column()}: "
+                "expected return type"
+            )
+
+        if (
+            return_type.text not in ("i32", "i64", "bool")
+            and return_type.kind != "identifier"
+        ):
+            error_at(return_type, "expected return type")
+
+        self.eat()
+        self.ensure_end()
+
+        body = self.parse_block()
+
+        node = LambdaNode(
+            name_token.text,
+            captures,
+            parameters,
+            return_type.text,
+            body,
+            fn_token.line,
+            fn_token.column
+        )
+        node.capture_positions = capture_positions
+        return node
+
     def parse_print(self):
         token = self.eat(text="print")
         self.eat(text="(")
@@ -1591,6 +1804,12 @@ class Parser:
 
     def parse_statement(self):
         token = self.peek()
+
+        if token.text == "while":
+            return self.parse_while()
+
+        if token.text == "fn":
+            return self.parse_lambda()
 
         if token.text == "print":
             return self.parse_print()
@@ -1667,6 +1886,18 @@ class Parser:
                 continue
 
             if first.text == "fn":
+                is_lambda = (
+                    len(self.tokens) > 3
+                    and self.tokens[3].text == "["
+                )
+
+                if is_lambda:
+                    phase = "statement"
+                    node = self.parse_lambda()
+                    self.ensure_end()
+                    statements.append(node)
+                    continue
+
                 if phase == "statement":
                     error_at(
                         first,
@@ -1708,6 +1939,601 @@ class Parser:
 
 
 
+
+
+
+class EffectAnalyzer:
+    def __init__(self):
+        self.effects = set()
+
+    def analyze(self, program):
+        functions = list(program.functions)
+
+        for struct in program.structs:
+            functions.extend(struct.methods)
+
+        for function in functions:
+            if (
+                self.has_direct_effect(function.body)
+                or self.is_recursive(function)
+            ):
+                self.effects.add(id(function))
+
+        while True:
+            previous = len(self.effects)
+
+            for function in functions:
+                if id(function) in self.effects:
+                    continue
+
+                if self.calls_effectful_function(function.body):
+                    self.effects.add(id(function))
+
+            if len(self.effects) == previous:
+                break
+
+        return self.effects
+
+    def calls_effectful_function(self, node):
+        if node is None:
+            return False
+
+        if isinstance(node, CallNode):
+            resolved = getattr(node, "callable_member", node)
+
+            if resolved is not node:
+                return self.calls_effectful_function(resolved)
+
+            if node.function is not None:
+                if id(node.function) in self.effects:
+                    return True
+
+            return any(
+                self.calls_effectful_function(arg)
+                for arg in node.arguments
+            )
+
+        if isinstance(node, MemberCallNode):
+            resolved = getattr(node, "callable_member", node)
+
+            if resolved is not node:
+                return self.calls_effectful_function(resolved)
+
+            if id(getattr(node, "method", None)) in self.effects:
+                return True
+
+            return (
+                self.calls_effectful_function(node.obj)
+                or any(
+                    self.calls_effectful_function(arg)
+                    for arg in node.arguments
+                )
+            )
+
+        if isinstance(node, BlockNode):
+            return (
+                any(
+                    self.calls_effectful_function(s)
+                    for s in node.statements
+                )
+                or self.calls_effectful_function(node.exit)
+            )
+
+        if isinstance(node, IfNode):
+            return (
+                self.calls_effectful_function(node.condition)
+                or self.calls_effectful_function(node.then_block)
+                or self.calls_effectful_function(node.else_block)
+            )
+
+        if isinstance(node, WhileNode):
+            return (
+                self.calls_effectful_function(node.condition)
+                or self.calls_effectful_function(node.body)
+            )
+
+        if isinstance(node, DeclNode):
+            return any(
+                self.calls_effectful_function(value)
+                for value in node.init_values
+            )
+
+        if isinstance(node, (AssignNode, ExitNode, PrintNode, NotNode)):
+            return self.calls_effectful_function(node.value)
+
+        if isinstance(node, BinOpNode):
+            return (
+                self.calls_effectful_function(node.left)
+                or self.calls_effectful_function(node.right)
+            )
+
+        if isinstance(node, StructInitNode):
+            return any(
+                self.calls_effectful_function(value)
+                for value in node.values
+            )
+
+        if isinstance(node, ResultFieldNode):
+            return self.calls_effectful_function(node.obj)
+
+        return False
+
+    def has_direct_effect(self, node):
+        if node is None:
+            return False
+
+        if isinstance(node, (PrintNode, ReadNode, WhileNode)):
+            return True
+
+        if isinstance(node, AssignNode):
+            if (
+                getattr(node, "is_member_field", False)
+                or node.fields
+            ):
+                return True
+
+        if isinstance(node, BlockNode):
+            return (
+                any(self.has_direct_effect(s) for s in node.statements)
+                or self.has_direct_effect(node.exit)
+            )
+
+        if isinstance(node, IfNode):
+            return (
+                self.has_direct_effect(node.condition)
+                or self.has_direct_effect(node.then_block)
+                or self.has_direct_effect(node.else_block)
+            )
+
+        if isinstance(node, DeclNode):
+            return any(
+                self.has_direct_effect(value)
+                for value in node.init_values
+            )
+
+        if isinstance(node, AssignNode):
+            return self.has_direct_effect(node.value)
+
+        if isinstance(node, ExitNode):
+            return self.has_direct_effect(node.value)
+
+        if isinstance(node, BinOpNode):
+            return (
+                self.has_direct_effect(node.left)
+                or self.has_direct_effect(node.right)
+            )
+
+        if isinstance(node, NotNode):
+            return self.has_direct_effect(node.value)
+
+        if isinstance(node, StructInitNode):
+            return any(
+                self.has_direct_effect(value)
+                for value in node.values
+            )
+
+        if isinstance(node, ResultFieldNode):
+            return self.has_direct_effect(node.obj)
+
+        if isinstance(node, (CallNode, MemberCallNode)):
+            return (
+                any(
+                    self.has_direct_effect(arg)
+                    for arg in node.arguments
+                )
+                or (
+                    isinstance(node, MemberCallNode)
+                    and self.has_direct_effect(node.obj)
+                )
+            )
+
+        return False
+
+    def collect_called_functions(self, node):
+        if node is None:
+            return set()
+
+        if isinstance(node, (CallNode, MemberCallNode)):
+            resolved = getattr(node, "callable_member", node)
+
+            if resolved is not node:
+                return self.collect_called_functions(resolved)
+
+            result = set()
+            target = getattr(node, "function", None)
+
+            if isinstance(node, MemberCallNode):
+                target = getattr(node, "method", None)
+                result.update(self.collect_called_functions(node.obj))
+
+            if target is not None:
+                result.add(target)
+
+            for argument in node.arguments:
+                result.update(self.collect_called_functions(argument))
+
+            return result
+
+        if isinstance(node, BlockNode):
+            result = set()
+            for statement in node.statements:
+                result.update(self.collect_called_functions(statement))
+            result.update(self.collect_called_functions(node.exit))
+            return result
+
+        if isinstance(node, IfNode):
+            return (
+                self.collect_called_functions(node.condition)
+                | self.collect_called_functions(node.then_block)
+                | self.collect_called_functions(node.else_block)
+            )
+
+        if isinstance(node, WhileNode):
+            return (
+                self.collect_called_functions(node.condition)
+                | self.collect_called_functions(node.body)
+            )
+
+        if isinstance(node, DeclNode):
+            result = set()
+            for value in node.init_values:
+                result.update(self.collect_called_functions(value))
+            return result
+
+        if isinstance(node, (AssignNode, ExitNode, PrintNode, NotNode)):
+            return self.collect_called_functions(node.value)
+
+        if isinstance(node, BinOpNode):
+            return (
+                self.collect_called_functions(node.left)
+                | self.collect_called_functions(node.right)
+            )
+
+        if isinstance(node, StructInitNode):
+            result = set()
+            for value in node.values:
+                result.update(self.collect_called_functions(value))
+            return result
+
+        if isinstance(node, ResultFieldNode):
+            return self.collect_called_functions(node.obj)
+
+        return set()
+
+    def is_recursive(self, function):
+        visited = set()
+        pending = list(self.collect_called_functions(function.body))
+
+        while pending:
+            current = pending.pop()
+
+            if current is function:
+                return True
+
+            if id(current) in visited:
+                continue
+
+            visited.add(id(current))
+            pending.extend(
+                self.collect_called_functions(current.body)
+            )
+
+        return False
+
+
+
+def has_call_or_read(node, effects=None):
+    if node is None:
+        return False
+
+    if effects is None:
+        effects = set()
+
+    if isinstance(node, ReadNode):
+        return True
+
+    if isinstance(node, (CallNode, MemberCallNode)):
+        resolved = getattr(node, "callable_member", node)
+
+        if resolved is not node:
+            return has_call_or_read(resolved, effects)
+
+        target = getattr(node, "function", None)
+
+        if isinstance(node, MemberCallNode):
+            target = getattr(node, "method", None)
+
+            if has_call_or_read(node.obj, effects):
+                return True
+
+        if target is None or id(target) in effects:
+            return True
+
+        return any(
+            has_call_or_read(argument, effects)
+            for argument in node.arguments
+        )
+
+    if isinstance(node, BinOpNode):
+        return (
+            has_call_or_read(node.left, effects)
+            or has_call_or_read(node.right, effects)
+        )
+
+    if isinstance(node, NotNode):
+        return has_call_or_read(node.value, effects)
+
+    if isinstance(node, StructInitNode):
+        return any(
+            has_call_or_read(value, effects)
+            for value in node.values
+        )
+
+    if isinstance(node, ResultFieldNode):
+        return has_call_or_read(node.obj, effects)
+
+    return False
+
+
+class UseCounter:
+    def __init__(self, effects=None):
+        self.reads = {}
+        self.effects = effects if effects is not None else set()
+
+    def read(self, declaration):
+        if isinstance(declaration, DeclNode):
+            key = id(declaration)
+            self.reads[key] = self.reads.get(key, 0) + 1
+
+    def visit_program(self, node):
+        for struct in node.structs:
+            struct.accept(self)
+        for function in node.functions:
+            function.accept(self)
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit is not None:
+            node.exit.accept(self)
+
+    def visit_struct(self, node):
+        for method in node.methods:
+            method.accept(self)
+
+    def visit_function(self, node):
+        node.body.accept(self)
+
+    def visit_block(self, node):
+        for statement in node.statements:
+            statement.accept(self)
+        if node.exit is not None:
+            node.exit.accept(self)
+
+    def visit_decl(self, node):
+        self.reads.setdefault(id(node), 0)
+
+        if any(
+            has_call_or_read(value, self.effects)
+            for value in node.init_values
+        ):
+            self.read(node)
+
+        for value in node.init_values:
+            value.accept(self)
+
+    def visit_assign(self, node):
+        if has_call_or_read(node.value, self.effects):
+            self.read(node.decl)
+
+        node.value.accept(self)
+
+    def visit_var(self, node):
+        self.read(node.decl)
+
+    def visit_field_access(self, node):
+        self.read(node.decl)
+
+    def visit_result_field(self, node):
+        node.obj.accept(self)
+
+    def visit_if(self, node):
+        node.condition.accept(self)
+        node.then_block.accept(self)
+        if node.else_block is not None:
+            node.else_block.accept(self)
+
+    def visit_while(self, node):
+        node.condition.accept(self)
+        node.body.accept(self)
+
+    def visit_exit(self, node):
+        node.value.accept(self)
+
+    def visit_print(self, node):
+        node.value.accept(self)
+
+    def visit_binop(self, node):
+        node.left.accept(self)
+        node.right.accept(self)
+
+    def visit_not(self, node):
+        node.value.accept(self)
+
+    def visit_struct_init(self, node):
+        for value in node.values:
+            value.accept(self)
+
+    def visit_call(self, node):
+        if hasattr(node, "callable_member"):
+            node.callable_member.accept(self)
+        else:
+            for argument in node.arguments:
+                argument.accept(self)
+
+    def visit_member_call(self, node):
+        node.obj.accept(self)
+        for argument in node.arguments:
+            argument.accept(self)
+
+    def visit_lambda(self, node):
+        node.body.accept(self)
+
+    def visit_const(self, node):
+        pass
+
+    def visit_bool(self, node):
+        pass
+
+    def visit_read(self, node):
+        pass
+
+    def visit_string(self, node):
+        pass
+
+    def visit_field_decl(self, node):
+        pass
+
+    def visit_parameter(self, node):
+        pass
+
+
+
+class FunctionUseCounter(UseCounter):
+    def __init__(self):
+        super().__init__()
+        self.calls = {}
+
+    def visit_call(self, node):
+        if node.function is not None:
+            key = id(node.function)
+            self.calls[key] = self.calls.get(key, 0) + 1
+
+        super().visit_call(node)
+
+
+class Pruner:
+    def __init__(self, dead):
+        self.dead = dead
+        self.removed = 0
+
+    def prune(self, program):
+        program.statements = self.prune_statements(
+            program.statements
+        )
+
+        for function in program.functions:
+            self.prune_block(function.body)
+
+        for struct in program.structs:
+            for method in struct.methods:
+                self.prune_block(method.body)
+
+        return program
+
+    def prune_block(self, block):
+        block.statements = self.prune_statements(
+            block.statements
+        )
+
+    def prune_statements(self, statements):
+        result = []
+
+        for statement in statements:
+            if isinstance(statement, DeclNode):
+                if id(statement) in self.dead:
+                    self.removed += 1
+                    continue
+
+            if isinstance(statement, AssignNode):
+                if (
+                    statement.decl is not None
+                    and id(statement.decl) in self.dead
+                ):
+                    self.removed += 1
+                    continue
+
+            if isinstance(statement, IfNode):
+                self.prune_block(statement.then_block)
+
+                if statement.else_block is not None:
+                    self.prune_block(statement.else_block)
+
+            if isinstance(statement, WhileNode):
+                self.prune_block(statement.body)
+
+            result.append(statement)
+
+        return result
+
+
+
+def remove_unused(program):
+    while True:
+        effects = EffectAnalyzer().analyze(program)
+        counter = UseCounter(effects)
+        program.accept(counter)
+
+        dead = {
+            declaration_id
+            for declaration_id, count in counter.reads.items()
+            if count == 0
+        }
+
+        if not dead:
+            return program
+
+        pruner = Pruner(dead)
+        pruner.prune(program)
+
+        if pruner.removed == 0:
+            return program
+
+
+def remove_unused_functions(program):
+    while True:
+        counter = FunctionUseCounter()
+        program.accept(counter)
+
+        dead = {
+            id(function)
+            for function in program.functions
+            if counter.calls.get(id(function), 0) == 0
+        }
+
+        if not dead:
+            return program
+
+        program.functions = [
+            function
+            for function in program.functions
+            if id(function) not in dead
+        ]
+
+
+def optimize_program(program):
+    while True:
+        before = (
+            len(program.functions),
+            count_declarations(program)
+        )
+
+        remove_unused(program)
+        remove_unused_functions(program)
+
+        after = (
+            len(program.functions),
+            count_declarations(program)
+        )
+
+        if before == after:
+            return program
+
+
+def count_declarations(program):
+    counter = UseCounter()
+    program.accept(counter)
+    return len(counter.reads)
+
+
 class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]
@@ -1715,6 +2541,8 @@ class SemanticChecker:
         self.functions = {}
         self.current_function = None
         self.current_struct = None
+        self.current_program = None
+        self.lambda_counter = 0
 
     def current_scope(self):
         return self.scopes[-1]
@@ -1732,6 +2560,8 @@ class SemanticChecker:
         return None
 
     def visit_program(self, node):
+        self.current_program = node
+
         for struct in node.structs:
             struct.accept(self)
 
@@ -1760,8 +2590,11 @@ class SemanticChecker:
             for method in struct.methods:
                 self.check_member_function(struct, method)
 
-        for statement in node.statements:
+        for index, statement in enumerate(node.statements):
             statement.accept(self)
+
+            if isinstance(statement, LambdaNode):
+                node.statements[index] = statement.generated_decl
 
         node.exit.accept(self)
 
@@ -1823,9 +2656,12 @@ class SemanticChecker:
                 return
 
             if isinstance(node, (CallNode, MemberCallNode)):
-                yield node
-                for argument in node.arguments:
+                resolved = getattr(node, "callable_member", node)
+                yield resolved
+
+                for argument in resolved.arguments:
                     yield from expressions(argument)
+                return
 
         for struct in program.structs:
             for method in struct.methods:
@@ -1893,9 +2729,40 @@ class SemanticChecker:
             if node is None:
                 return
 
+            node = getattr(node, "callable_member", node)
+
             if isinstance(node, MemberCallNode):
                 if node.method.is_mutating:
                     receiver = node.obj
+
+                    current = receiver
+
+                    while isinstance(current, ResultFieldNode):
+                        if not current.resolved_field.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                "cannot call mutating member function "
+                                f"'{node.name}' through const field"
+                            )
+
+                        current = current.obj
+
+                    if isinstance(current, (VarNode, FieldAccessNode)):
+                        if not current.decl.mutable:
+                            raise CompileError(
+                                f"line {node.line}:{node.column}: "
+                                "cannot call mutating member function "
+                                f"'{node.name}' on const object"
+                            )
+
+                        if isinstance(current, FieldAccessNode):
+                            for field in current.resolved_fields:
+                                if not field.mutable:
+                                    raise CompileError(
+                                        f"line {node.line}:{node.column}: "
+                                        "cannot call mutating member function "
+                                        f"'{node.name}' through const field"
+                                    )
 
                     if isinstance(receiver, (VarNode, FieldAccessNode)):
                         if not receiver.decl.mutable:
@@ -1984,6 +2851,14 @@ class SemanticChecker:
     def visit_print(self, node):
         node.value.accept(self)
 
+        value_struct = self.structs.get(node.value.type)
+
+        if value_struct is not None and getattr(value_struct, "is_lambda", False):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                "cannot print a lambda"
+            )
+
         if node.value.type not in (
             "i32", "i64", "bool", "string"
         ) and node.value.type not in self.structs:
@@ -2066,19 +2941,143 @@ class SemanticChecker:
         finally:
             self.current_struct = previous_struct
 
+    def visit_lambda(self, node):
+        scope = self.current_scope()
+
+        if node.name in scope:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"variable '{node.name}' is already declared"
+            )
+
+        fields = []
+        values = []
+        seen = set()
+
+        for index, (name, mutable) in enumerate(node.captures):
+            line, column = node.capture_positions[index]
+
+            if name in seen:
+                raise CompileError(
+                    f"line {line}:{column}: "
+                    f"duplicate capture '{name}'"
+                )
+
+            seen.add(name)
+            declaration = self.lookup(name)
+
+            if declaration is None:
+                raise CompileError(
+                    f"line {line}:{column}: "
+                    f"cannot capture unknown variable '{name}'"
+                )
+
+            fields.append(
+                FieldDeclNode(
+                    name,
+                    declaration.type_name,
+                    mutable,
+                    node.line,
+                    node.column
+                )
+            )
+
+            values.append(
+                VarNode(name, node.line, node.column)
+            )
+
+        capture_names = {name for name, _ in node.captures}
+
+        for parameter in node.parameters:
+            if parameter.name in capture_names:
+                raise CompileError(
+                    f"line {parameter.line}:{parameter.column}: "
+                    f"parameter '{parameter.name}' conflicts "
+                    "with a captured variable"
+                )
+
+        capture_names = {name for name, _ in node.captures}
+
+        for parameter in node.parameters:
+            if parameter.name in capture_names:
+                raise CompileError(
+                    f"line {parameter.line}:{parameter.column}: "
+                    f"parameter '{parameter.name}' conflicts with capture"
+                )
+
+        base_name = f"lambda.{node.name}"
+        struct_name = base_name
+        suffix = 2
+
+        while struct_name in self.structs:
+            struct_name = f"{base_name}.{suffix}"
+            suffix += 1
+
+        method = FunctionNode(
+            "call",
+            node.parameters,
+            node.return_type,
+            node.body,
+            node.line,
+            node.column
+        )
+
+        struct = StructNode(
+            struct_name,
+            fields,
+            node.line,
+            node.column,
+            [method]
+        )
+
+        struct.is_lambda = True
+
+        struct.accept(self)
+        self.check_member_function(struct, method)
+
+        declaration = DeclNode(
+            node.name,
+            struct_name,
+            any(mutable for _, mutable in node.captures),
+            values,
+            node.line,
+            node.column
+        )
+
+        declaration.accept(self)
+
+        node.generated_struct = struct
+        node.generated_decl = declaration
+        self.current_program.structs.append(struct)
+
     def visit_field_decl(self, node):
         pass
 
     def visit_block(self, node):
         self.scopes.append({})
 
-        for statement in node.statements:
+        for index, statement in enumerate(node.statements):
             statement.accept(self)
+
+            if isinstance(statement, LambdaNode):
+                node.statements[index] = statement.generated_decl
 
         if node.exit is not None:
             node.exit.accept(self)
 
         self.scopes.pop()
+
+    def visit_while(self, node):
+        condition_type = node.condition.accept(self)
+
+        if condition_type != "bool":
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"the condition of 'while' must be bool, "
+                f"got {condition_type}"
+            )
+
+        node.body.accept(self)
 
     def visit_if(self, node):
         condition_type = node.condition.accept(self)
@@ -2512,6 +3511,52 @@ class SemanticChecker:
         )
 
         if method is None:
+            field = next(
+                (
+                    field
+                    for field in struct.fields
+                    if field.name == node.name
+                ),
+                None
+            )
+
+            if field is not None:
+                if isinstance(node.obj, VarNode):
+                    receiver = FieldAccessNode(
+                        node.obj.name,
+                        [node.name],
+                        node.line,
+                        node.column
+                    )
+                elif isinstance(node.obj, FieldAccessNode):
+                    receiver = FieldAccessNode(
+                        node.obj.name,
+                        node.obj.fields + [node.name],
+                        node.line,
+                        node.column
+                    )
+                else:
+                    receiver = ResultFieldNode(
+                        node.obj,
+                        node.name,
+                        node.line,
+                        node.column
+                    )
+
+                callable_call = MemberCallNode(
+                    receiver,
+                    "call",
+                    node.arguments,
+                    node.line,
+                    node.column
+                )
+
+                callable_call.accept(self)
+
+                node.callable_member = callable_call
+                node.type = callable_call.type
+                return node.type
+
             raise CompileError(
                 f"line {node.line}:{node.column}: "
                 f"struct '{object_type}' has no member function "
@@ -2551,7 +3596,84 @@ class SemanticChecker:
 
         return node.type
 
+    def resolve_callable_object(self, node):
+        declaration = self.lookup(node.name)
+
+        if declaration is None:
+            return None
+
+        if node.name in self.functions:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is both a variable and a function: "
+                "rename one of them"
+            )
+
+        object_type = declaration.type_name
+        struct = self.structs.get(object_type)
+
+        if struct is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is not callable: "
+                f"it is {object_type}"
+            )
+
+        method = next(
+            (
+                method
+                for method in struct.methods
+                if method.name == "call"
+            ),
+            None
+        )
+
+        if method is None:
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is not callable: "
+                f"{object_type} has no member function 'call'"
+            )
+
+        receiver = VarNode(
+            node.name,
+            node.line,
+            node.column
+        )
+
+        member_call = MemberCallNode(
+            receiver,
+            "call",
+            node.arguments,
+            node.line,
+            node.column
+        )
+
+        try:
+            member_call.accept(self)
+        except CompileError as error:
+            message = str(error)
+            message = message.replace(
+                "member function 'call'",
+                f"callable object '{node.name}'"
+            )
+            message = message.replace(
+                "pass argument to 'call'",
+                f"pass argument to '{node.name}'"
+            )
+            raise CompileError(message) from None
+
+        node.callable_member = member_call
+        node.type = member_call.type
+
+        return node.type
+
     def visit_call(self, node):
+        callable_type = self.resolve_callable_object(node)
+
+        if callable_type is not None:
+            return callable_type
+
         if self.current_struct is not None:
             method = next(
                 (
@@ -2678,6 +3800,12 @@ class SemanticChecker:
                 raise CompileError(
                     f"line {node.line}:{node.column}: "
                     f"type '{current_type}' has no fields"
+                )
+
+            if getattr(struct, "is_lambda", False):
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot access capture '{field_name}' outside lambda"
                 )
 
             field = next(
@@ -2977,6 +4105,10 @@ class CodeGen:
 
             return
 
+        if isinstance(node, WhileNode):
+            self.allocate_declarations(node.body)
+            return
+
         if isinstance(node, IfNode):
             self.allocate_declarations(
                 node.then_block
@@ -3119,6 +4251,27 @@ class CodeGen:
             and not self.builder.block.is_terminated
         ):
             node.exit.accept(self)
+
+    def visit_while(self, node):
+        function = self.builder.block.function
+
+        condition_block = function.append_basic_block("while.cond")
+        body_block = function.append_basic_block("while.body")
+        end_block = function.append_basic_block("while.end")
+
+        self.builder.branch(condition_block)
+
+        self.builder.position_at_end(condition_block)
+        condition = node.condition.accept(self)
+        self.builder.cbranch(condition, body_block, end_block)
+
+        self.builder.position_at_end(body_block)
+        node.body.accept(self)
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(condition_block)
+
+        self.builder.position_at_end(end_block)
 
     def visit_if(self, node):
         condition = node.condition.accept(self)
@@ -3798,6 +4951,27 @@ class AstPrinter:
         node.body.accept(self)
         self.indent -= 2
 
+    def visit_lambda(self, node):
+        self.write(
+            f"Lambda {node.name} -> {node.return_type}"
+        )
+        self.indent += 2
+
+        captures = [
+            f"mut {name}" if mutable else name
+            for name, mutable in node.captures
+        ]
+
+        self.write(
+            f"Captures: {', '.join(captures)}"
+        )
+
+        for parameter in node.parameters:
+            parameter.accept(self)
+
+        node.body.accept(self)
+        self.indent -= 2
+
     def visit_parameter(self, node):
         self.write(
             f"Parameter {node.name} {node.type_name}"
@@ -3824,6 +4998,13 @@ class AstPrinter:
 
         self.indent += 2
         node.value.accept(self)
+        self.indent -= 2
+
+    def visit_while(self, node):
+        self.write("While")
+        self.indent += 2
+        node.condition.accept(self)
+        node.body.accept(self)
         self.indent -= 2
 
     def visit_if(self, node):
@@ -3958,10 +5139,13 @@ def check_program(program):
     program.accept(checker)
 
 
-def compile_program(data):
+def compile_program(data, optimize=False):
     program = parse_program(data)
 
     check_program(program)
+
+    if optimize:
+        optimize_program(program)
 
     codegen = CodeGen()
     return program.accept(codegen)
@@ -4004,14 +5188,32 @@ def main():
 
         return
 
-    if ast_mode:
-        input_path = sys.argv[2]
+    optimized_ast_mode = (
+        len(sys.argv) == 4
+        and sys.argv[1] == "--remove-unused"
+        and sys.argv[2] == "--ast-checked"
+    )
+
+    ast_checked_mode = (
+        len(sys.argv) == 3
+        and sys.argv[1] == "--ast-checked"
+    )
+
+    if ast_mode or ast_checked_mode or optimized_ast_mode:
+        input_path = sys.argv[3] if optimized_ast_mode else sys.argv[2]
 
         try:
             with open(input_path, "rb") as source:
                 data = source.read()
 
             program = parse_program(data)
+
+            if ast_checked_mode or optimized_ast_mode:
+                check_program(program)
+
+            if optimized_ast_mode:
+                optimize_program(program)
+
             print_ast(program)
 
         except CompileError as error:
@@ -4030,21 +5232,29 @@ def main():
 
         return
 
-    if len(sys.argv) != 3:
+    optimize = (
+        len(sys.argv) == 4
+        and sys.argv[1] == "--remove-unused"
+    )
+
+    if optimize:
+        input_path = sys.argv[2]
+        output_path = sys.argv[3]
+    elif len(sys.argv) == 3:
+        input_path = sys.argv[1]
+        output_path = sys.argv[2]
+    else:
         print(
-            "usage: python3 compiler.py input.txt output.ll",
+            "usage: python3 compiler.py [--remove-unused] input.txt output.ll",
             file=sys.stderr
         )
         sys.exit(1)
-
-    input_path = sys.argv[1]
-    output_path = sys.argv[2]
 
     try:
         with open(input_path, "rb") as source:
             data = source.read()
 
-        llvm_ir = compile_program(data)
+        llvm_ir = compile_program(data, optimize=optimize)
 
         with open(output_path, "w") as output:
             output.write(llvm_ir)

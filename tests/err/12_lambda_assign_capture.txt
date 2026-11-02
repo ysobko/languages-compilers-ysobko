@@ -1,0 +1,10 @@
+i32 mut k{10}
+
+fn change := [k](i32 y) -> i32
+{
+    k := 20
+    exit k
+}
+
+print(change(5))
+exit 0

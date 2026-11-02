@@ -1,0 +1,13 @@
+Program
+  Function loud -> i32
+    Parameter x i32
+    Block
+      Print
+        Var x
+      Exit
+        Var x
+  Decl c i32 const
+    Call loud
+      Const 5
+  Exit
+    Const 0

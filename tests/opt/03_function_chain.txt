@@ -1,0 +1,16 @@
+fn first := () -> i32
+{
+    exit second()
+}
+
+fn second := () -> i32
+{
+    exit 10
+}
+
+fn needed := () -> i32
+{
+    exit 20
+}
+
+exit needed()
