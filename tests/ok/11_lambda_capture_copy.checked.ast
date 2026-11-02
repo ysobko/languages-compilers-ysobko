@@ -1,5 +1,5 @@
 Program
-  Struct lambda.add_k.1
+  Struct lambda.add_k
     Field k i32 const
     MemberFn call -> i32
       Parameter y i32
@@ -12,7 +12,7 @@ Program
           Var result
   Decl k i32 mut
     Const 10
-  Decl add_k lambda.add_k.1 const
+  Decl add_k lambda.add_k const
     Var k
   Assign k
     Const 100

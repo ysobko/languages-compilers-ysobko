@@ -466,18 +466,52 @@ def lex(data: bytes):
 
             elif b == ord('"'):
                 start_col = col
-                end = data.find(b'"', i + 1)
+                j = i + 1
+                value = bytearray()
 
-                if end == -1 or b"\n" in data[i + 1:end]:
+                escapes = {
+                    ord("n"): 10,
+                    ord("t"): 9,
+                    ord("r"): 13,
+                    ord('"'): 34,
+                    ord("\\"): 92,
+                }
+
+                while j < len(data):
+                    current = data[j]
+
+                    if current == ord('"'):
+                        break
+
+                    if current == 10:
+                        raise CompileError(
+                            f"line {line}:{col}: unterminated string literal"
+                        )
+
+                    if current == ord("\\"):
+                        j += 1
+
+                        if j >= len(data) or data[j] == 10:
+                            raise CompileError(
+                                f"line {line}:{col}: unterminated string literal"
+                            )
+
+                        escaped = data[j]
+
+                        if escaped not in escapes:
+                            raise CompileError(
+                                f"line {line}:{col}: unknown string escape"
+                            )
+
+                        value.append(escapes[escaped])
+                    else:
+                        value.append(current)
+
+                    j += 1
+
+                if j >= len(data):
                     raise CompileError(
                         f"line {line}:{col}: unterminated string literal"
-                    )
-
-                value = data[i + 1:end]
-
-                if b"\\" in value:
-                    raise CompileError(
-                        f"line {line}:{col}: string escapes are not supported"
                     )
 
                 try:
@@ -486,6 +520,8 @@ def lex(data: bytes):
                     raise CompileError(
                         f"line {line}:{col}: invalid UTF-8 string"
                     )
+
+                end = j
 
                 tokens.append(Token("string", text, line, col))
                 col += end - i
@@ -1651,6 +1687,7 @@ class Parser:
         self.eat(text="[")
 
         captures = []
+        capture_positions = []
 
         if self.peek() is not None and self.peek().text != "]":
             while True:
@@ -1662,6 +1699,7 @@ class Parser:
 
                 capture = self.eat(kind="identifier")
                 captures.append((capture.text, mutable))
+                capture_positions.append((capture.line, capture.column))
 
                 if self.peek() is not None and self.peek().text == ",":
                     self.eat(text=",")
@@ -1730,7 +1768,7 @@ class Parser:
 
         body = self.parse_block()
 
-        return LambdaNode(
+        node = LambdaNode(
             name_token.text,
             captures,
             parameters,
@@ -1739,6 +1777,8 @@ class Parser:
             fn_token.line,
             fn_token.column
         )
+        node.capture_positions = capture_positions
+        return node
 
     def parse_print(self):
         token = self.eat(text="print")
@@ -2216,6 +2256,14 @@ class SemanticChecker:
     def visit_print(self, node):
         node.value.accept(self)
 
+        value_struct = self.structs.get(node.value.type)
+
+        if value_struct is not None and getattr(value_struct, "is_lambda", False):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                "cannot print a lambda"
+            )
+
         if node.value.type not in (
             "i32", "i64", "bool", "string"
         ) and node.value.type not in self.structs:
@@ -2311,10 +2359,12 @@ class SemanticChecker:
         values = []
         seen = set()
 
-        for name, mutable in node.captures:
+        for index, (name, mutable) in enumerate(node.captures):
+            line, column = node.capture_positions[index]
+
             if name in seen:
                 raise CompileError(
-                    f"line {node.line}:{node.column}: "
+                    f"line {line}:{column}: "
                     f"duplicate capture '{name}'"
                 )
 
@@ -2323,7 +2373,7 @@ class SemanticChecker:
 
             if declaration is None:
                 raise CompileError(
-                    f"line {node.line}:{node.column}: "
+                    f"line {line}:{column}: "
                     f"cannot capture unknown variable '{name}'"
                 )
 
@@ -2341,8 +2391,32 @@ class SemanticChecker:
                 VarNode(name, node.line, node.column)
             )
 
-        self.lambda_counter += 1
-        struct_name = f"lambda.{node.name}.{self.lambda_counter}"
+        capture_names = {name for name, _ in node.captures}
+
+        for parameter in node.parameters:
+            if parameter.name in capture_names:
+                raise CompileError(
+                    f"line {parameter.line}:{parameter.column}: "
+                    f"parameter '{parameter.name}' conflicts "
+                    "with a captured variable"
+                )
+
+        capture_names = {name for name, _ in node.captures}
+
+        for parameter in node.parameters:
+            if parameter.name in capture_names:
+                raise CompileError(
+                    f"line {parameter.line}:{parameter.column}: "
+                    f"parameter '{parameter.name}' conflicts with capture"
+                )
+
+        base_name = f"lambda.{node.name}"
+        struct_name = base_name
+        suffix = 2
+
+        while struct_name in self.structs:
+            struct_name = f"{base_name}.{suffix}"
+            suffix += 1
 
         method = FunctionNode(
             "call",
@@ -2360,6 +2434,8 @@ class SemanticChecker:
             node.column,
             [method]
         )
+
+        struct.is_lambda = True
 
         struct.accept(self)
         self.check_member_function(struct, method)
@@ -2850,12 +2926,27 @@ class SemanticChecker:
             )
 
             if field is not None:
-                receiver = ResultFieldNode(
-                    node.obj,
-                    node.name,
-                    node.line,
-                    node.column
-                )
+                if isinstance(node.obj, VarNode):
+                    receiver = FieldAccessNode(
+                        node.obj.name,
+                        [node.name],
+                        node.line,
+                        node.column
+                    )
+                elif isinstance(node.obj, FieldAccessNode):
+                    receiver = FieldAccessNode(
+                        node.obj.name,
+                        node.obj.fields + [node.name],
+                        node.line,
+                        node.column
+                    )
+                else:
+                    receiver = ResultFieldNode(
+                        node.obj,
+                        node.name,
+                        node.line,
+                        node.column
+                    )
 
                 callable_call = MemberCallNode(
                     receiver,
@@ -3114,6 +3205,12 @@ class SemanticChecker:
                 raise CompileError(
                     f"line {node.line}:{node.column}: "
                     f"type '{current_type}' has no fields"
+                )
+
+            if getattr(struct, "is_lambda", False):
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"cannot access capture '{field_name}' outside lambda"
                 )
 
             field = next(
