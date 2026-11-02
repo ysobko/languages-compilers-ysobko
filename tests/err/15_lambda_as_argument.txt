@@ -1,0 +1,13 @@
+fn identity := (i32 x) -> i32
+{
+    exit x
+}
+
+fn add_one := [](i32 x) -> i32
+{
+    i32 result{x + 1}
+    exit result
+}
+
+print(identity(add_one))
+exit 0
