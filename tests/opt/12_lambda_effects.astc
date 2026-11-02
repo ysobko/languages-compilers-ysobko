@@ -1,5 +1,5 @@
 Program
-  Struct lambda.quiet.1
+  Struct lambda.quiet
     MemberFn call -> i32
       Parameter x i32
       Block
@@ -9,7 +9,7 @@ Program
             Const 2
         Exit
           Var result
-  Struct lambda.loud.2
+  Struct lambda.loud
     MemberFn call -> i32
       Parameter x i32
       Block
@@ -17,7 +17,7 @@ Program
           Var x
         Exit
           Var x
-  Decl loud lambda.loud.2 const
+  Decl loud lambda.loud const
   Decl b i32 const
     MemberCall call
       Var loud
