@@ -170,6 +170,113 @@ def run_optimized_ast(source):
     return True, ""
 
 
+
+def run_io(source, session, optimize=False):
+    input_path = source.parent / f"{source.stem}.{session}.in"
+    expected_path = source.parent / f"{source.stem}.{session}.expected"
+    expected = expected_path.read_text()
+
+    with tempfile.TemporaryDirectory() as directory:
+        directory = Path(directory)
+        ir_path = directory / "program.ll"
+        obj_path = directory / "program.o"
+        exe_path = directory / "program"
+
+        commands = [
+            [
+                sys.executable,
+                str(COMPILER),
+                *(["--remove-unused"] if optimize else []),
+                str(source),
+                str(ir_path),
+            ],
+            [
+                "llc",
+                "-filetype=obj",
+                "-relocation-model=pic",
+                str(ir_path),
+                "-o",
+                str(obj_path),
+            ],
+            ["clang", "-fPIE", str(obj_path), "-o", str(exe_path)],
+        ]
+
+        for command in commands:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return False, result.stderr.strip()
+
+        result = subprocess.run(
+            [str(exe_path)],
+            input=input_path.read_text(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.stdout != expected:
+            return False, (
+                f"expected:\n{expected}\nactual:\n{result.stdout}"
+            )
+
+        return True, ""
+
+
+
+def run_ffi(source, session, optimize=False):
+    input_path = source.parent / f"{source.stem}.{session}.in"
+    expected_path = source.parent / f"{source.stem}.{session}.expected"
+    c_path = source.with_suffix(".c")
+    expected = expected_path.read_text()
+
+    with tempfile.TemporaryDirectory() as directory:
+        directory = Path(directory)
+        ir_path = directory / "program.ll"
+        obj_path = directory / "program.o"
+        c_obj_path = directory / "helper.o"
+        exe_path = directory / "program"
+
+        commands = [
+            [
+                sys.executable,
+                str(COMPILER),
+                *(["--remove-unused"] if optimize else []),
+                str(source),
+                str(ir_path),
+            ],
+            [
+                "llc", "-filetype=obj", "-relocation-model=pic",
+                str(ir_path), "-o", str(obj_path),
+            ],
+            ["clang", "-c", str(c_path), "-o", str(c_obj_path)],
+            ["clang", str(obj_path), str(c_obj_path), "-o", str(exe_path)],
+        ]
+
+        for command in commands:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return False, result.stderr.strip()
+
+        result = subprocess.run(
+            [str(exe_path)],
+            input=input_path.read_text(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.stdout != expected:
+            return False, (
+                f"expected:\n{expected}\nactual:\n{result.stdout}"
+            )
+
+        return True, ""
+
+
 def main():
     optimize = "--remove-unused" in sys.argv[1:]
     failures = 0
@@ -258,7 +365,40 @@ def main():
             print(f"FAIL opt/{source.stem}.astc")
             print(ast_message)
 
-    total = len(valid_tests) + len(invalid_tests) + len(opt_tests)
+
+    io_tests = sorted((TESTS / "io").glob("*.txt"))
+
+    for source in io_tests:
+        for input_path in sorted(source.parent.glob(f"{source.stem}.*.in")):
+            session = input_path.name[len(source.stem) + 1:-3]
+
+            for io_optimize in (False, True):
+                mode = "optimized" if io_optimize else "normal"
+                ok, message = run_io(source, session, io_optimize)
+
+                if ok:
+                    print(f"PASS io/{source.stem}.{session} ({mode})")
+                else:
+                    failures += 1
+                    print(f"FAIL io/{source.stem}.{session} ({mode})")
+                    print(message)
+
+
+    ffi_tests = sorted((TESTS / "ffi").glob("*.txt"))
+    for source in ffi_tests:
+        for input_path in sorted(source.parent.glob(f"{source.stem}.*.in")):
+            session = input_path.name[len(source.stem) + 1:-3]
+            for ffi_optimize in (False, True):
+                mode = "optimized" if ffi_optimize else "normal"
+                ok, message = run_ffi(source, session, ffi_optimize)
+                if ok:
+                    print(f"PASS ffi/{source.stem}.{session} ({mode})")
+                else:
+                    failures += 1
+                    print(f"FAIL ffi/{source.stem}.{session} ({mode})")
+                    print(message)
+
+    total = len(valid_tests) + len(invalid_tests) + len(opt_tests) + len(io_tests) + len(ffi_tests)
 
     print()
     print(f"{total} program tests, {failures} failures")

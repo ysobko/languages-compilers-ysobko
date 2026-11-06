@@ -91,7 +91,8 @@ class FunctionNode:
         return_type,
         body,
         line,
-        column
+        column,
+        is_extern=False
     ):
         self.name = name
         self.parameters = parameters
@@ -99,6 +100,7 @@ class FunctionNode:
         self.body = body
         self.line = line
         self.column = column
+        self.is_extern = is_extern
         self.ir_function = None
 
     def accept(self, visitor):
@@ -414,6 +416,7 @@ KEYWORDS = {
     "while": "keyword",
     "struct": "keyword",
     "fn": "keyword",
+    "extern": "keyword",
     "read": "keyword",
     "print": "keyword",
 }
@@ -1576,7 +1579,7 @@ class Parser:
                 )
             )
 
-    def parse_function(self):
+    def parse_function(self, is_extern=False):
         fn_token = self.eat(text="fn")
 
         name_token = self.peek()
@@ -1669,7 +1672,7 @@ class Parser:
         self.eat()
         self.ensure_end()
 
-        body = self.parse_block()
+        body = None if is_extern else self.parse_block()
 
         return FunctionNode(
             name_token.text,
@@ -1677,7 +1680,8 @@ class Parser:
             return_type.text,
             body,
             fn_token.line,
-            fn_token.column
+            fn_token.column,
+            is_extern=is_extern
         )
 
     def parse_lambda(self):
@@ -1804,6 +1808,8 @@ class Parser:
 
     def parse_statement(self):
         token = self.peek()
+        if token.text == "extern":
+            error_at(token, "'extern' is not allowed here")
 
         if token.text == "while":
             return self.parse_while()
@@ -1883,6 +1889,26 @@ class Parser:
 
                 struct_node = self.parse_struct()
                 structs.append(struct_node)
+                continue
+
+            if first.text == "extern":
+                if phase == "statement":
+                    error_at(
+                        first,
+                        "function declaration is not allowed after statements"
+                    )
+
+                self.eat(text="extern")
+                phase = "function"
+                function_node = self.parse_function(is_extern=True)
+                next_tokens = self.peek_line()
+                if next_tokens and next_tokens[0].text == "{":
+                    raise CompileError(
+                        f"line {function_node.line}:{function_node.column}: "
+                        f"extern function '{function_node.name}' has no body: "
+                        "it is defined in C"
+                    )
+                functions.append(function_node)
                 continue
 
             if first.text == "fn":
@@ -2300,7 +2326,8 @@ class UseCounter:
             method.accept(self)
 
     def visit_function(self, node):
-        node.body.accept(self)
+        if node.body is not None:
+            node.body.accept(self)
 
     def visit_block(self, node):
         for statement in node.statements:
@@ -3104,8 +3131,43 @@ class SemanticChecker:
         for parameter in node.parameters:
             parameter.accept(self)
 
-        node.body.accept(self)
+        if node.is_extern and node.name in ("main", "printf", "scanf"):
+            raise CompileError(
+                f"line {node.line}:{node.column}: "
+                f"'{node.name}' is a name the compiler already uses in the module"
+            )
 
+        if node.is_extern:
+            for struct in self.structs.values():
+                for method in struct.methods:
+                    if node.name == f"{struct.name}_{method.name}":
+                        raise CompileError(
+                            f"line {node.line}:{node.column}: "
+                            f"'{node.name}' is a name the compiler already uses in the module"
+                        )
+
+        if node.is_extern:
+            for parameter in node.parameters:
+                if parameter.type_name not in ("i32", "i64"):
+                    raise CompileError(
+                        f"line {parameter.line}:{parameter.column}: "
+                        f"parameter '{parameter.name}' of extern function "
+                        f"'{node.name}' has type '{parameter.type_name}': "
+                        "only i32 and i64 cross into C"
+                    )
+
+            if node.return_type not in ("i32", "i64"):
+                raise CompileError(
+                    f"line {node.line}:{node.column}: "
+                    f"extern function '{node.name}' returns "
+                    f"'{node.return_type}': only i32 and i64 cross into C"
+                )
+
+            self.current_function = previous_function
+            self.scopes = previous_scopes
+            return
+
+        node.body.accept(self)
         if node.body.exit is None:
             raise CompileError(
                 f"line {node.line}:{node.column}: "
@@ -4023,7 +4085,7 @@ class CodeGen:
             function.ir_function = ir.Function(
                 self.module,
                 function_type,
-                name=f"user_{function.name}"
+                name=function.name if function.is_extern else f"user_{function.name}"
             )
 
     def create_member_function_declarations(self, node):
@@ -4203,6 +4265,9 @@ class CodeGen:
         self.builder = previous_builder
 
     def visit_function(self, node):
+        if node.is_extern:
+            return
+
         previous_builder = self.builder
         previous_function = getattr(
             self,
