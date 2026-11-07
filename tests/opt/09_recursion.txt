@@ -1,0 +1,25 @@
+fn countdown := (i32 n) -> i32
+{
+    i32 mut result{0}
+
+    if n == 0
+    {
+        result := 0
+    }
+    else
+    {
+        result := countdown(n - 1)
+    }
+
+    exit result
+}
+
+fn square := (i32 x) -> i32
+{
+    i32 result{x * x}
+    exit result
+}
+
+i32 a{countdown(3)}
+i32 b{square(5)}
+exit 0

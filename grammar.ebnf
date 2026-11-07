@@ -5,7 +5,7 @@ field_decl ::= type [ "mut" ] ident NL
 
 fn ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
-statement ::= decl | assign | if | print
+statement ::= decl | assign | if | while | lambda | print
 
 decl ::= type [ "mut" ] ident "{" [ initializer { "," initializer } ] "}"
 initializer ::= expr | "{" [ initializer { "," initializer } ] "}"
@@ -15,6 +15,13 @@ type ::= "i32" | "i64" | "bool" | ident
 assign ::= ident { "." ident } ":=" expr
 
 if ::= "if" expr NL block [ "else" NL block ]
+
+while ::= "while" expr NL block
+
+lambda ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
+           "(" [ type ident { "," type ident } ] ")" "->" type NL block
+
+capture ::= [ "mut" ] ident
 
 block ::= "{" NL { statement } [ exit NL ] "}" NL
 
@@ -48,6 +55,6 @@ string ::= '"' { string_char } '"'
 ident ::= identifier_except_reserved_words
 
 reserved_words ::= "struct" | "fn" | "mut" | "exit"
-                 | "if" | "else" | "true" | "false"
+                 | "if" | "else" | "while" | "true" | "false"
                  | "i32" | "i64" | "bool"
                  | "read" | "print"

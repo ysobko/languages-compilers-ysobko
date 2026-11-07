@@ -1,0 +1,8 @@
+fn calculate := () -> i32
+{
+    print(42)
+    exit 10
+}
+
+i32 unused{calculate()}
+exit 0

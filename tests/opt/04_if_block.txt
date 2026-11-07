@@ -1,0 +1,8 @@
+i32 mut result{0}
+if true
+{
+    i32 unused{100}
+    i32 needed{7}
+    result := needed
+}
+exit result

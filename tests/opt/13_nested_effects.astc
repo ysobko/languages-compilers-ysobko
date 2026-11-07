@@ -1,0 +1,21 @@
+Program
+  Function square -> i32
+    Parameter x i32
+    Block
+      Decl result i32 const
+        BinOp *
+          Var x
+          Var x
+      Exit
+        Var result
+  Function loud -> i32
+    Block
+      Print
+        Const 42
+      Exit
+        Const 5
+  Decl unused i32 const
+    Call square
+      Call loud
+  Exit
+    Const 0

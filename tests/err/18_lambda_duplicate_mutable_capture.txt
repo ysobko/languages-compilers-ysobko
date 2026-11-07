@@ -1,0 +1,8 @@
+i32 mut x{10}
+
+fn counter := [x, mut x]() -> i32
+{
+    exit x
+}
+
+exit 0

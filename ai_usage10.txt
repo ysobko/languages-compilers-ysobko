@@ -1,0 +1,126 @@
+# AI Usage Disclosure — Practice 10
+
+## 1. AI Tools Used
+
+I used ChatGPT (OpenAI) during Practice 10 to help me understand the tasks, write some parts of the code, fix errors, and test my compiler.
+
+I mostly used AI when I was not sure how to implement something or when my code did not work as expected.
+
+## 2. Prompts I Used
+
+Here are examples of my requests to ChatGPT, translated into English:
+
+- "Explain what I need to do for this practice."
+- "Let's do everything step by step."
+- "What should I do next?"
+- "Help me check if this works correctly."
+- "Let's check the bonus task according to the requirements."
+- "Do I need to commit all these files?"
+- "Explain what I should write in the reflection, but don't write it for me."
+
+I also sent terminal outputs and error messages to ChatGPT and asked how to fix the problems.
+
+For example, I shared errors such as:
+
+- `DuplicatedNameError: printf`
+- `DuplicatedNameError: Point_d2`
+- `AttributeError: 'Parser' object has no attribute 'line_index'`
+- `compilation error: line 3:5: invalid statement`
+
+These messages were used to find problems in my implementation.
+
+## 3. How I Used AI
+
+### Input and Output Tests
+
+I used ChatGPT to help me create tests for `read()` and `print()`.
+
+We created `tests/io/points.txt` and test sessions with different input data and expected outputs.
+
+AI also helped me update `run_tests.py` so it could run programs with input data and compare their actual output with the expected output.
+
+I used the suggested commands and checked the results in my terminal.
+
+### Extern Functions
+
+I used AI to help me add support for `extern fn` in `compiler.py`.
+
+This included changes to the lexer, parser, AST, semantic checker, and LLVM code generation.
+
+AI suggested how to recognize the `extern` keyword, parse functions without bodies, check their types, and generate LLVM declarations with the original C function names.
+
+I used these suggestions in my compiler and tested them with small examples.
+
+### Error Checking
+
+AI helped me add checks for incorrect `extern fn` declarations.
+
+For example, the compiler now reports errors when an external function uses unsupported types, has a conflicting name, has a body, or is declared in the wrong place.
+
+Some AI suggestions did not work correctly at first.
+
+One example was the check for a body after an external function. AI suggested using `self.line_index`, but this attribute did not exist in my Parser. I showed the error and the Parser code to ChatGPT, and we changed the implementation to use `peek_line()`.
+
+Another problem was that LLVM crashed with `DuplicatedNameError` when an external function had the same name as `printf` or a struct method. We added checks to report compilation errors before LLVM code generation.
+
+I tested these changes using nine programs in `tests/err`.
+
+### Calling C Functions
+
+I used ChatGPT to help me create `tests/ffi/geometry.txt` and `tests/ffi/geometry.c`.
+
+The program uses `abs()` from the C library and `isqrt()` from our C file.
+
+AI helped me with the commands for compiling and linking the files using `llc` and `clang`.
+
+I tested the program with two inputs: `-3 4` and `2 3`. Both produced the expected results.
+
+AI also helped me add FFI testing to `run_tests.py`, so the Geometry tests run automatically.
+
+### LLVM and Optimization
+
+I used AI to help me test `abs()` and `llabs()` with `i32` and `i64`.
+
+I checked the generated LLVM IR and ran the program using `lli`.
+
+I also used `nm` to check the external symbols in `geometry.o`.
+
+Finally, I tested `--remove-unused` and checked that the unused `llabs()` declaration was removed while the used `abs()` function remained.
+
+## 4. What I Took from AI and What I Changed
+
+I used AI-generated code suggestions for parts of `compiler.py` and `run_tests.py`.
+
+I also used AI-generated test programs and terminal commands.
+
+I did not just copy everything without checking it. I ran the code, looked at the results, and shared errors with ChatGPT when something did not work.
+
+Some suggestions needed changes because they did not match the structure of my compiler.
+
+For example, we changed the Parser code after the `line_index` error and added extra checks for function name conflicts.
+
+I kept the changes that worked correctly with my compiler and passed the tests.
+
+## 5. What I Understood
+
+I understood that `extern fn` allows my language to call a function that is implemented in C.
+
+The compiler does not generate the body of this function. It only creates a declaration in LLVM IR, and the actual implementation is found during linking.
+
+I also understood why we need to check types and function names before generating LLVM IR. Otherwise, the program may fail later or call a function incorrectly.
+
+I learned that testing is important because even a small change in the Parser or Semantic Checker can affect other parts of the compiler.
+
+I also understood the difference between a compilation error that my compiler reports and an internal Python or LLVM error.
+
+## 6. Testing
+
+I tested the compiler using `run_tests.py`, `lli`, `llc`, `clang`, and `nm`.
+
+The final full test run showed:
+
+**130 program tests, 0 failures.**
+
+The Geometry tests also passed in normal and optimized modes.
+
+I used ChatGPT as a coding and debugging assistant, but I ran and checked the code in my own environment.

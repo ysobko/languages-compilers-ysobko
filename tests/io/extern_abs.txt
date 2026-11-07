@@ -1,0 +1,4 @@
+extern fn abs := (i32 x) -> i32
+i32 result{abs(0 - 15)}
+print(result)
+exit 0

@@ -1,0 +1,26 @@
+Program
+  Function countdown -> i32
+    Parameter n i32
+    Block
+      Decl result i32 mut
+        Const 0
+      If
+        BinOp ==
+          Var n
+          Const 0
+        Block
+          Assign result
+            Const 0
+        Block
+          Assign result
+            Call countdown
+              BinOp -
+                Var n
+                Const 1
+      Exit
+        Var result
+  Decl a i32 const
+    Call countdown
+      Const 3
+  Exit
+    Const 0

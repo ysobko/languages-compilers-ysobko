@@ -1,0 +1,7 @@
+Program
+  Function needed -> i32
+    Block
+      Exit
+        Const 20
+  Exit
+    Call needed

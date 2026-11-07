@@ -1,0 +1,14 @@
+fn double := (i32 x) -> i32
+{
+    i32 result{x * 2}
+    exit result
+}
+
+fn calculate := [](i32 x) -> i32
+{
+    i32 result{double(x)}
+    exit result
+}
+
+print(calculate(7))
+exit 0

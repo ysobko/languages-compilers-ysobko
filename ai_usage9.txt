@@ -1,0 +1,85 @@
+AI Usage — Practice 9
+
+AI tool used: ChatGPT (OpenAI)
+
+Task 1 — Remove Unused Variables
+
+I used ChatGPT to understand how unused variable elimination should work and how to implement it using the AST.
+
+AI helped me with:
+
+* Understanding how to count variable reads and identify unused declarations.
+* Implementing and improving the UseCounter and remove_unused logic.
+* Understanding why the optimization needs to run repeatedly until no more variables can be removed.
+* Debugging cases where removing one variable makes another variable unused.
+* Checking which declarations and assignments should be preserved.
+
+I used AI-generated code suggestions as a starting point and made changes while testing them in my compiler.
+
+Task 2 — Remove Unused Functions
+
+I used ChatGPT to understand how to identify unused global functions and remove them from the AST.
+
+AI helped me with:
+
+* Implementing the logic for finding and removing unused global functions.
+* Handling functions that become unused after other functions are removed.
+* Understanding why the optimization should repeat until the result is stable.
+* Checking how function elimination interacts with unused variable elimination.
+* Keeping struct methods and lambdas outside the direct global function removal pass.
+
+I adapted the suggested implementation to my existing compiler structure and checked the results using tests.
+
+Task 3 — Tests and Documentation
+
+I used ChatGPT to help create and verify optimization tests.
+
+AI helped me with:
+
+* Preparing test programs for unused variable and function elimination.
+* Understanding how to compare the optimized AST with expected results.
+* Running tests with and without the --remove-unused flag.
+* Debugging test failures.
+* Writing and improving the optimization section in README.md.
+
+I also used ChatGPT to understand Python memory management and test whether removed AST nodes are garbage-collected using weakref and gc.collect().
+
+I ran the tests myself and checked their results.
+
+Additional Task — Calls Without Effects
+
+I used ChatGPT extensively to understand and implement the analysis of function calls with and without side effects.
+
+AI helped me with:
+
+* Understanding the difference between pure functions and functions with side effects.
+* Designing and implementing EffectAnalyzer.
+* Detecting effects caused by print, read, while, field assignments, and recursive calls.
+* Propagating side effects through chains of function calls.
+* Handling methods, lambdas, and nested function calls.
+* Updating UseCounter and the optimization passes to preserve calls with side effects while allowing unused pure calls to be removed.
+* Debugging the optimization order for the --ast-checked mode.
+* Creating seven additional tests (07–13) covering pure and effectful calls, methods, recursion, loops, indirect calls, lambdas, and nested calls.
+* Updating the README to describe the additional optimization.
+
+Some suggested test programs did not match the language syntax. I corrected them after checking the compiler errors and the parser implementation.
+
+I also checked how assignments to object fields are handled and updated the effect analysis to detect them.
+
+What I Used and Changed
+
+I used ChatGPT-generated explanations, implementation suggestions, test examples, and documentation text.
+
+I incorporated suggested code into my compiler and modified it when tests or compiler errors showed problems. In particular, I adjusted the effect detection logic, the order of optimization passes, and several test programs.
+
+I ran the commands and tests myself, inspected the results, and checked the implementation against the existing compiler.
+
+The final optimized test run completed with 114 program tests and 0 failures.
+
+What I Did Not Use AI For
+
+I did not use AI to execute commands or run the compiler directly in my Ubuntu environment.
+
+I performed the terminal operations, checked the error messages, ran the tests, and managed the Git changes myself.
+
+I did not use any other AI tools for this practice.
